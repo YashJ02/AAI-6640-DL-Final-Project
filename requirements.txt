@@ -1,12 +1,12 @@
 # Core
 torch>=2.11
-numpy>=2.4
-pandas>=3.0
+numpy>=2.2.6,<2.3
+pandas>=2.2,<3.0
 
 # Data
 alpaca-py>=0.43
 yfinance>=1.2
-pandas-ta>=0.3.14b
+pandas-ta>=0.4.67b0
 python-dotenv>=1.2
 pyarrow>=18.0
 
