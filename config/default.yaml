@@ -1,0 +1,130 @@
+# Global experiment settings used across training/evaluation scripts.
+experiment:
+  name_prefix: "intraday_direction"
+  random_seed: 42
+  device: "auto" # "auto" picks CUDA when available.
+
+# Universe definition: 30 equities, grouped by sector for reporting.
+tickers:
+  technology: ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN"]
+  financials: ["JPM", "BAC", "GS", "MS", "WFC", "C"]
+  healthcare: ["JNJ", "UNH", "PFE", "ABT", "MRK", "TMO"]
+  energy: ["XOM", "CVX", "COP", "SLB", "EOG", "MPC"]
+  consumer_discretionary: ["TSLA", "HD", "NKE", "MCD", "SBUX", "TJX"]
+
+# Market data download/caching parameters.
+data:
+  source_primary: "alpaca"
+  source_fallback: "yfinance"
+  interval: "5Min"
+  intervals_supported: ["1Min", "5Min", "15Min"]
+  history_days: 252
+  cache_dir: "data/raw"
+  timezone: "America/New_York"
+  start_hour: 9
+  start_minute: 30
+  end_hour: 16
+  end_minute: 0
+
+# Feature engineering settings.
+features:
+  include_stationary_ohlcv: true
+  include_technical_indicators: true
+  include_fourier_time: true
+  drop_warmup_nans: true
+  technical:
+    rsi_period: 14
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    bb_period: 20
+    bb_std: 2.0
+    ema_fast: 9
+    ema_slow: 21
+    atr_period: 14
+    adx_period: 14
+    stoch_k: 14
+    stoch_d: 3
+    cci_period: 20
+    willr_period: 14
+    mfi_period: 14
+
+# Label generation with EWMA volatility normalization.
+labels:
+  ewma_lambda: 0.94
+  threshold_down: -0.5
+  threshold_up: 0.5
+  neutral_class: 1
+
+# Windowing and walk-forward split definitions.
+dataset:
+  sequence_length: 60
+  forecast_horizon: 1
+  batch_size: 256
+  num_workers: 0
+  pin_memory: true
+  walk_forward_folds:
+    - {train_months: [1, 7], val_month: 8, test_month: 9}
+    - {train_months: [2, 8], val_month: 9, test_month: 10}
+    - {train_months: [3, 9], val_month: 10, test_month: 11}
+    - {train_months: [4, 10], val_month: 11, test_month: 12}
+
+# Model architecture defaults.
+models:
+  num_features: 28
+  num_classes: 3
+  ticker_vocab_size: 30
+
+  lstm:
+    hidden_size: 256
+    num_layers: 3
+    dropout: 0.3
+    attention_size: 256
+    fc_hidden: 128
+
+  tft:
+    hidden_size: 128
+    attention_heads: 4
+    ticker_embedding_dim: 16
+    dropout: 0.2
+
+  cnn_lstm:
+    conv_channels: 64
+    conv_kernel_size: 3
+    dilations: [1, 2, 4]
+    lstm_hidden_size: 128
+    lstm_layers: 2
+    dropout: 0.3
+    fc_hidden: 128
+
+# Training and optimization configuration.
+training:
+  max_epochs: 50
+  early_stopping_patience: 10
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  warmup_ratio: 0.1
+  gradient_clip_norm: 1.0
+  label_smoothing: 0.1
+
+  focal_loss:
+    gamma: 2.0
+
+  checkpoint_dir: "artifacts/checkpoints"
+  log_every_n_steps: 50
+
+# Evaluation and backtest settings.
+evaluation:
+  confidence_threshold: 0.6
+  mc_dropout_passes: 30
+  backtest_days: 30
+  risk_free_rate_annual: 0.02
+  high_vol_atr_percentile: 0.75
+
+# MLflow tracking settings.
+mlflow:
+  tracking_uri: "file:./mlruns"
+  experiment_names:
+    lstm: "intraday_lstm"
+    tft: "intraday_tft"
+    cnn_lstm: "intraday_cnn_lstm"

@@ -1,0 +1,22 @@
+[project]
+name = "aai-6640-dl-final-project"
+version = "0.1.0"
+description = "Intraday stock direction prediction with LSTM, TFT, and CNN-LSTM"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

@@ -1,0 +1,31 @@
+# Core
+torch>=2.11
+numpy>=2.4
+pandas>=3.0
+
+# Data
+alpaca-py>=0.43
+yfinance>=1.2
+pandas-ta>=0.3.14b
+python-dotenv>=1.2
+pyarrow>=18.0
+
+# ML / Evaluation
+scikit-learn>=1.8
+scipy>=1.14
+
+# Visualization
+matplotlib>=3.10
+seaborn>=0.13
+plotly>=6.7
+streamlit>=1.56
+
+# Experiment Tracking
+mlflow>=3.11
+
+# Config / Utilities
+pyyaml>=6.0
+tqdm>=4.67
+
+# Linting / Quality
+ruff>=0.15
