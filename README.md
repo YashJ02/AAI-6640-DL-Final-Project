@@ -9,6 +9,8 @@ This repository implements a full end-to-end comparative study for intraday stoc
 The implementation follows the complete plan in `PROJECT_PLAN.md`, including:
 
 - Data download and caching (single selected provider via config)
+- Related market-context ingestion (SPY/QQQ/VIX by default)
+- Data quality cleaning and per-ticker audit reports
 - 28-feature engineering pipeline
 - Volatility-normalized 3-class label generation
 - Walk-forward validation
@@ -93,9 +95,11 @@ python -m src.main --mode data
 What this executes:
 
 1. Download/cache OHLCV bars per ticker.
-2. Engineer 28 features.
-3. Build EWMA volatility-normalized labels.
-4. Construct month-indexed walk-forward-ready table.
+2. Download related-context symbols defined in config.
+3. Clean/validate bars and write audit artifacts to `artifacts/data_quality/`.
+4. Engineer model features.
+5. Build EWMA volatility-normalized labels.
+6. Construct walk-forward-ready supervised table.
 
 ### Step 6-10: Train All Architectures
 

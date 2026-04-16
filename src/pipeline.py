@@ -11,7 +11,8 @@ import pandas as pd
 import torch
 
 from src.data.dataset import create_all_fold_dataloaders
-from src.data.download import download_universe
+from src.data.cleaning import clean_ohlcv_frame
+from src.data.download import download_related_universe, download_universe
 from src.data.features import engineer_features
 from src.data.labels import build_labels
 from src.training.trainer import pairwise_mcnemar_across_models, train_model_across_folds
@@ -35,36 +36,159 @@ def _to_builtin(value: Any) -> Any:
     return value
 
 
+def _symbol_feature_prefix(symbol: str) -> str:
+    """Build a stable feature prefix from a related symbol string."""
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(symbol))
+    token = token.strip("_")
+    return token or "symbol"
+
+
+def _build_related_feature_frame(
+    related_frames: dict[str, pd.DataFrame],
+) -> tuple[pd.DataFrame | None, list[str]]:
+    """Convert related-symbol OHLCV frames into aligned context feature columns."""
+    if not related_frames:
+        return None, []
+
+    merged: pd.DataFrame | None = None
+    related_columns: list[str] = []
+
+    for symbol, frame in related_frames.items():
+        prefix = f"rel_{_symbol_feature_prefix(symbol)}"
+        columns = [f"{prefix}_ret1", f"{prefix}_volchg1"]
+        related_columns.extend(columns)
+
+        rel = frame[["timestamp", "close", "volume"]].copy().sort_values("timestamp").reset_index(drop=True)
+
+        close_prev = rel["close"].shift(1).replace(0.0, np.nan)
+        volume_prev = rel["volume"].shift(1).replace(0.0, np.nan)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rel[columns[0]] = np.log(rel["close"] / close_prev)
+            rel[columns[1]] = np.log(rel["volume"] / volume_prev)
+
+        rel = rel[["timestamp"] + columns]
+        rel = rel.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+
+        if merged is None:
+            merged = rel
+        else:
+            merged = merged.merge(rel, on="timestamp", how="outer")
+
+    if merged is None:
+        return None, []
+
+    merged = merged.sort_values("timestamp").reset_index(drop=True)
+    merged[related_columns] = merged[related_columns].ffill().fillna(0.0)
+    return merged, related_columns
+
+
+def _write_data_quality_outputs(
+    cleaning_rows: list[dict[str, Any]],
+    per_ticker_rows: list[dict[str, Any]],
+    combined: pd.DataFrame,
+    feature_columns: list[str],
+    related_feature_count: int,
+) -> None:
+    """Persist data-quality and dataset-understanding artifacts for traceability."""
+    quality_dir = Path("artifacts") / "data_quality"
+    quality_dir.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame(cleaning_rows).to_csv(quality_dir / "ticker_cleaning_report.csv", index=False)
+    pd.DataFrame(per_ticker_rows).to_csv(quality_dir / "ticker_modeling_report.csv", index=False)
+
+    label_distribution = (
+        combined["label"].value_counts(normalize=True).sort_index().to_dict()
+        if "label" in combined.columns
+        else {}
+    )
+
+    summary = {
+        "rows": int(len(combined)),
+        "tickers": int(combined["ticker"].nunique()) if "ticker" in combined.columns else 0,
+        "feature_count": int(len(feature_columns)),
+        "related_feature_count": int(related_feature_count),
+        "timestamp_min": str(combined["timestamp"].min()) if "timestamp" in combined.columns else None,
+        "timestamp_max": str(combined["timestamp"].max()) if "timestamp" in combined.columns else None,
+        "label_distribution": label_distribution,
+    }
+
+    with (quality_dir / "modeling_summary.json").open("w", encoding="utf-8") as handle:
+        json.dump(_to_builtin(summary), handle, indent=2)
+
+
 def prepare_engineered_universe(
     config: dict[str, Any],
     force_refresh: bool = False,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Download and transform all tickers into one labeled modeling dataframe."""
     raw_frames = download_universe(config=config, force_refresh=force_refresh)
+    related_frames = (
+        download_related_universe(config=config, force_refresh=force_refresh)
+        if bool(config.get("data", {}).get("use_related_features", False))
+        else {}
+    )
+    related_feature_frame, related_feature_columns = _build_related_feature_frame(related_frames)
 
     engineered_frames: list[pd.DataFrame] = []
-    feature_columns: list[str] | None = None
+    base_feature_columns: list[str] | None = None
+
+    cleaning_rows: list[dict[str, Any]] = []
+    per_ticker_rows: list[dict[str, Any]] = []
 
     for ticker, raw_frame in raw_frames.items():
+        cleaned_frame, cleaning_stats = clean_ohlcv_frame(raw_frame, config=config, ticker=ticker)
+        cleaning_rows.append(cleaning_stats)
+
+        if cleaned_frame.empty:
+            continue
+
         # Step 1: engineer stationary/technical/temporal features.
-        feature_frame, feature_columns, _ = engineer_features(
-            frame=raw_frame,
+        feature_frame, base_feature_columns, _ = engineer_features(
+            frame=cleaned_frame,
             config=config,
             fit_normalizer=False,
             normalizer_stats=None,
         )
 
+        if related_feature_frame is not None and related_feature_columns:
+            feature_frame = feature_frame.merge(related_feature_frame, on="timestamp", how="left")
+            feature_frame[related_feature_columns] = feature_frame[related_feature_columns].ffill().fillna(0.0)
+
         # Step 2: generate volatility-normalized labels.
         labeled_frame, _ = build_labels(feature_frame, config=config)
         labeled_frame["ticker"] = ticker
 
+        label_counts = labeled_frame["label"].value_counts(normalize=True).to_dict()
+        per_ticker_rows.append(
+            {
+                "ticker": ticker,
+                "rows_after_cleaning": int(len(cleaned_frame)),
+                "rows_after_features": int(len(feature_frame)),
+                "rows_after_labels": int(len(labeled_frame)),
+                "label_0_pct": float(label_counts.get(0, 0.0)),
+                "label_1_pct": float(label_counts.get(1, 0.0)),
+                "label_2_pct": float(label_counts.get(2, 0.0)),
+            }
+        )
+
         engineered_frames.append(labeled_frame)
 
-    if not engineered_frames or feature_columns is None:
+    if not engineered_frames or base_feature_columns is None:
         raise RuntimeError("No engineered data produced from configured tickers")
+
+    feature_columns = base_feature_columns + related_feature_columns
 
     combined = pd.concat(engineered_frames, ignore_index=True)
     combined = combined.sort_values(["ticker", "timestamp"]).reset_index(drop=True)
+
+    _write_data_quality_outputs(
+        cleaning_rows=cleaning_rows,
+        per_ticker_rows=per_ticker_rows,
+        combined=combined,
+        feature_columns=feature_columns,
+        related_feature_count=len(related_feature_columns),
+    )
 
     return combined, feature_columns
 
@@ -103,6 +227,10 @@ def run_training_pipeline(
         config=config,
         force_refresh=force_refresh,
     )
+
+    # Keep model dimensions synchronized with active feature and ticker universe.
+    config["models"]["num_features"] = int(len(feature_columns))
+    config["models"]["ticker_vocab_size"] = int(modeling_frame["ticker"].nunique())
 
     # Step 2: build fold-specific datasets/loaders.
     fold_bundles = create_all_fold_dataloaders(

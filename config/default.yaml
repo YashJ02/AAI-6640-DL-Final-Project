@@ -17,12 +17,22 @@ data:
   interval: "5Min"
   intervals_supported: ["1Min", "5Min", "15Min"]
   history_days: 55
+  use_related_features: true
+  related_symbols: ["SPY", "QQQ", "^VIX"]
   cache_dir: "data/raw"
   timezone: "America/New_York"
   start_hour: 9
   start_minute: 30
   end_hour: 16
   end_minute: 0
+
+# Data cleaning and quality controls applied before feature engineering.
+cleaning:
+  enabled: true
+  min_session_coverage: 0.85
+  max_abs_log_return: 0.20
+  max_intrabar_range: 0.25
+  drop_zero_volume: true
 
 # Feature engineering settings.
 features:
@@ -58,9 +68,18 @@ labels:
 dataset:
   sequence_length: 60
   forecast_horizon: 1
-  batch_size: 256
+  batch_size: 192
   num_workers: 0
-  pin_memory: true
+  pin_memory: false
+  split_mode: "sessions"
+  session_split:
+    train_sessions: 30
+    val_sessions: 10
+    test_sessions: 8
+    step_sessions: 5
+    max_folds: 2
+
+  # Fallback month-based splits for compatibility when split_mode="month".
   walk_forward_folds:
     - {train_months: [1, 1], val_month: 2, test_month: 3}
 
@@ -94,11 +113,11 @@ models:
 
 # Training and optimization configuration.
 training:
-  max_epochs: 50
-  early_stopping_patience: 10
-  learning_rate: 0.001
+  max_epochs: 45
+  early_stopping_patience: 8
+  learning_rate: 0.0008
   weight_decay: 0.00001
-  warmup_ratio: 0.1
+  warmup_ratio: 0.15
   gradient_clip_norm: 1.0
   label_smoothing: 0.1
 

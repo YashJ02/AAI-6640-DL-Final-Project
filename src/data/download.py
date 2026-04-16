@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,19 @@ def _to_yfinance_interval(interval: str) -> str:
 def _cache_file_path(cache_dir: Path, ticker: str, interval: str, history_days: int) -> Path:
     """Build deterministic cache path so reruns re-use files."""
     filename = f"{ticker}_{interval}_{history_days}d.parquet"
+    return cache_dir / filename
+
+
+def _sanitize_symbol_for_filename(symbol: str) -> str:
+    """Convert symbol into a filename-safe token for cache paths."""
+    token = re.sub(r"[^A-Za-z0-9]+", "_", symbol.strip())
+    return token.strip("_") or "symbol"
+
+
+def _related_cache_file_path(cache_dir: Path, symbol: str, interval: str, history_days: int) -> Path:
+    """Build deterministic cache path for related/context symbols."""
+    safe = _sanitize_symbol_for_filename(symbol)
+    filename = f"related_{safe}_{interval}_{history_days}d.parquet"
     return cache_dir / filename
 
 
@@ -157,6 +171,32 @@ def download_ticker_data(
     return frame
 
 
+def download_related_symbol_data(
+    symbol: str,
+    config: dict[str, Any],
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Download one related/context symbol with independent cache key."""
+    cache_dir = Path(config["data"]["cache_dir"])
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    interval = config["data"]["interval"]
+    history_days = int(config["data"]["history_days"])
+    cache_path = _related_cache_file_path(cache_dir, symbol, interval, history_days)
+
+    if cache_path.exists() and not force_refresh:
+        cached = pd.read_parquet(cache_path)
+        required = {"timestamp", "open", "high", "low", "close", "volume"}
+        if not required.issubset(set(cached.columns)):
+            cached = _normalize_bar_columns(cached, ticker=symbol)
+        cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True)
+        return cached.sort_values("timestamp").reset_index(drop=True)
+
+    frame = _download_yfinance(ticker=symbol, interval=interval, history_days=history_days)
+    frame.to_parquet(cache_path, index=False)
+    return frame
+
+
 def download_universe(config: dict[str, Any], force_refresh: bool = False) -> dict[str, pd.DataFrame]:
     """Download all configured tickers and return a mapping ticker->dataframe."""
     all_tickers = flatten_tickers(config["tickers"])
@@ -165,6 +205,28 @@ def download_universe(config: dict[str, Any], force_refresh: bool = False) -> di
     for ticker in tqdm(all_tickers, desc="Downloading tickers"):
         outputs[ticker] = download_ticker_data(
             ticker=ticker,
+            config=config,
+            force_refresh=force_refresh,
+        )
+
+    return outputs
+
+
+def download_related_universe(
+    config: dict[str, Any],
+    force_refresh: bool = False,
+) -> dict[str, pd.DataFrame]:
+    """Download related/context symbols configured for external signal features."""
+    raw_symbols = config.get("data", {}).get("related_symbols", [])
+    symbols = list(dict.fromkeys([str(symbol).strip() for symbol in raw_symbols if str(symbol).strip()]))
+
+    if not symbols:
+        return {}
+
+    outputs: dict[str, pd.DataFrame] = {}
+    for symbol in tqdm(symbols, desc="Downloading related symbols"):
+        outputs[symbol] = download_related_symbol_data(
+            symbol=symbol,
             config=config,
             force_refresh=force_refresh,
         )

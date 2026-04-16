@@ -18,10 +18,13 @@ class WalkForwardSplit:
     """Container for one walk-forward split specification."""
 
     fold_id: int
-    train_start_month: int
-    train_end_month: int
-    val_month: int
-    test_month: int
+    split_column: str
+    train_start: int
+    train_end: int
+    val_start: int
+    val_end: int
+    test_start: int
+    test_end: int
 
 
 class IntradaySequenceDataset(Dataset):
@@ -84,22 +87,108 @@ def assign_month_index(frame: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def parse_walk_forward_splits(config: dict[str, Any]) -> list[WalkForwardSplit]:
-    """Parse split definitions from config into strongly-typed objects."""
+def assign_session_index(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add session_index (1..N) based on local NY trading dates."""
+    df = frame.copy()
+
+    ts = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("America/New_York")
+    session = ts.dt.date
+
+    unique_sessions = pd.Index(sorted(session.unique()))
+    session_to_id = {day: idx + 1 for idx, day in enumerate(unique_sessions)}
+    df["session_index"] = session.map(session_to_id).astype(int)
+
+    return df
+
+
+def _parse_month_based_splits(config: dict[str, Any]) -> list[WalkForwardSplit]:
+    """Parse explicit month-index split definitions from config."""
     splits: list[WalkForwardSplit] = []
 
     for idx, fold in enumerate(config["dataset"]["walk_forward_folds"], start=1):
         splits.append(
             WalkForwardSplit(
                 fold_id=idx,
-                train_start_month=int(fold["train_months"][0]),
-                train_end_month=int(fold["train_months"][1]),
-                val_month=int(fold["val_month"]),
-                test_month=int(fold["test_month"]),
+                split_column="month_index",
+                train_start=int(fold["train_months"][0]),
+                train_end=int(fold["train_months"][1]),
+                val_start=int(fold["val_month"]),
+                val_end=int(fold["val_month"]),
+                test_start=int(fold["test_month"]),
+                test_end=int(fold["test_month"]),
             )
         )
 
     return splits
+
+
+def _parse_session_based_splits(frame: pd.DataFrame, config: dict[str, Any]) -> list[WalkForwardSplit]:
+    """Generate rolling session-index folds for short-horizon intraday datasets."""
+    cfg = config["dataset"]["session_split"]
+
+    train_sessions = int(cfg["train_sessions"])
+    val_sessions = int(cfg["val_sessions"])
+    test_sessions = int(cfg["test_sessions"])
+    step_sessions = int(cfg.get("step_sessions", test_sessions))
+    max_folds = int(cfg.get("max_folds", 0))
+
+    total_sessions = int(frame["session_index"].max())
+    fold_span = train_sessions + val_sessions + test_sessions
+
+    if total_sessions < fold_span:
+        raise ValueError(
+            "Not enough sessions for configured session_split. "
+            f"Need at least {fold_span}, found {total_sessions}."
+        )
+
+    splits: list[WalkForwardSplit] = []
+    fold_id = 1
+    start_session = 1
+
+    while True:
+        train_start = start_session
+        train_end = train_start + train_sessions - 1
+        val_start = train_end + 1
+        val_end = val_start + val_sessions - 1
+        test_start = val_end + 1
+        test_end = test_start + test_sessions - 1
+
+        if test_end > total_sessions:
+            break
+
+        splits.append(
+            WalkForwardSplit(
+                fold_id=fold_id,
+                split_column="session_index",
+                train_start=train_start,
+                train_end=train_end,
+                val_start=val_start,
+                val_end=val_end,
+                test_start=test_start,
+                test_end=test_end,
+            )
+        )
+
+        fold_id += 1
+        start_session += step_sessions
+
+        if max_folds > 0 and len(splits) >= max_folds:
+            break
+
+    if not splits:
+        raise ValueError("Session split generation produced zero folds")
+
+    return splits
+
+
+def parse_walk_forward_splits(frame: pd.DataFrame, config: dict[str, Any]) -> list[WalkForwardSplit]:
+    """Parse split definitions from config into strongly-typed objects."""
+    split_mode = str(config["dataset"].get("split_mode", "month")).lower()
+
+    if split_mode == "sessions":
+        return _parse_session_based_splits(frame=frame, config=config)
+
+    return _parse_month_based_splits(config=config)
 
 
 def build_ticker_id_map(frame: pd.DataFrame) -> dict[str, int]:
@@ -152,13 +241,13 @@ def compute_class_weights(labels: np.ndarray, num_classes: int = 3) -> torch.Ten
     return torch.tensor(normalized, dtype=torch.float32)
 
 
-def _split_frame_by_month(frame: pd.DataFrame, split: WalkForwardSplit) -> dict[str, pd.DataFrame]:
+def _split_frame_by_range(frame: pd.DataFrame, split: WalkForwardSplit) -> dict[str, pd.DataFrame]:
     """Slice dataframe into train/val/test partitions for one walk-forward fold."""
-    train_mask = (frame["month_index"] >= split.train_start_month) & (
-        frame["month_index"] <= split.train_end_month
-    )
-    val_mask = frame["month_index"] == split.val_month
-    test_mask = frame["month_index"] == split.test_month
+    key = split.split_column
+
+    train_mask = (frame[key] >= split.train_start) & (frame[key] <= split.train_end)
+    val_mask = (frame[key] >= split.val_start) & (frame[key] <= split.val_end)
+    test_mask = (frame[key] >= split.test_start) & (frame[key] <= split.test_end)
 
     return {
         "train": frame.loc[train_mask].copy(),
@@ -174,7 +263,7 @@ def create_fold_dataloaders(
     split: WalkForwardSplit,
 ) -> dict[str, Any]:
     """Create normalized datasets and dataloaders for a single fold."""
-    splits = _split_frame_by_month(frame, split)
+    splits = _split_frame_by_range(frame, split)
 
     # Train-only fit for normalization to avoid temporal leakage.
     normalization_stats = fit_indicator_normalization(splits["train"], TECHNICAL_COLUMNS)
@@ -240,12 +329,13 @@ def create_all_fold_dataloaders(
     """Create DataLoaders for all configured walk-forward folds."""
     df = frame.copy()
     df = assign_month_index(df)
+    df = assign_session_index(df)
 
     ticker_to_id = build_ticker_id_map(df)
     df["ticker_id"] = df["ticker"].map(ticker_to_id)
 
     outputs: list[dict[str, Any]] = []
-    for split in parse_walk_forward_splits(config):
+    for split in parse_walk_forward_splits(frame=df, config=config):
         fold_output = create_fold_dataloaders(
             frame=df,
             feature_columns=feature_columns,
