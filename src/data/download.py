@@ -1,26 +1,15 @@
-"""Download and cache intraday OHLCV data."""
+"""Download and cache intraday OHLCV data from yfinance."""
 
 from __future__ import annotations
 
-import os
-from datetime import datetime, timedelta
+import ast
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from dotenv import load_dotenv
 from tqdm import tqdm
 
 from src.utils.config import flatten_tickers
-
-try:
-    from alpaca.data.historical.stock import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-
-    HAS_ALPACA = True
-except ImportError:
-    HAS_ALPACA = False
 
 try:
     import yfinance as yf
@@ -53,8 +42,35 @@ def _cache_file_path(cache_dir: Path, ticker: str, interval: str, history_days: 
     return cache_dir / filename
 
 
+def _canonical_column_name(column: Any) -> str:
+    """Flatten provider-specific column labels into simple names."""
+    if isinstance(column, tuple):
+        for part in column:
+            part_text = str(part).strip()
+            if part_text:
+                return part_text
+        return str(column[0])
+
+    text = str(column)
+    if text.startswith("(") and text.endswith(")"):
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, tuple):
+                for part in parsed:
+                    part_text = str(part).strip()
+                    if part_text:
+                        return part_text
+        except (ValueError, SyntaxError):
+            pass
+
+    return text
+
+
 def _normalize_bar_columns(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """Normalize provider-specific columns into a shared schema."""
+    flattened = frame.copy()
+    flattened.columns = [_canonical_column_name(col) for col in flattened.columns]
+
     rename_map = {
         "Open": "open",
         "High": "high",
@@ -62,10 +78,16 @@ def _normalize_bar_columns(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
         "Close": "close",
         "Volume": "volume",
         "Datetime": "timestamp",
+        "Date": "timestamp",
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume",
         "timestamp": "timestamp",
     }
 
-    normalized = frame.rename(columns=rename_map).copy()
+    normalized = flattened.rename(columns=rename_map).copy()
 
     required = ["timestamp", "open", "high", "low", "close", "volume"]
     missing = [column for column in required if column not in normalized.columns]
@@ -77,67 +99,6 @@ def _normalize_bar_columns(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
     normalized["timestamp"] = pd.to_datetime(normalized["timestamp"], utc=True)
     normalized = normalized.sort_values("timestamp").reset_index(drop=True)
 
-    return normalized
-
-
-def _download_alpaca(
-    ticker: str,
-    interval: str,
-    history_days: int,
-    config: dict[str, Any],
-) -> pd.DataFrame:
-    """Download one ticker from Alpaca using API credentials from .env."""
-    if not HAS_ALPACA:
-        raise RuntimeError("alpaca-py is not installed")
-
-    load_dotenv()
-    key_id = os.getenv("ALPACA_API_KEY")
-    secret_key = os.getenv("ALPACA_API_SECRET")
-
-    if not key_id or not secret_key:
-        raise RuntimeError("Missing ALPACA_API_KEY / ALPACA_API_SECRET in environment")
-
-    qty, unit = _parse_interval(interval)
-    if unit != "minute":
-        raise ValueError(f"Unsupported Alpaca timeframe unit: {unit}")
-
-    start_dt = datetime.utcnow() - timedelta(days=history_days + 5)
-    end_dt = datetime.utcnow()
-
-    client = StockHistoricalDataClient(api_key=key_id, secret_key=secret_key)
-
-    request = StockBarsRequest(
-        symbol_or_symbols=ticker,
-        timeframe=TimeFrame(amount=qty, unit=TimeFrameUnit.Minute),
-        start=start_dt,
-        end=end_dt,
-        adjustment="raw",
-        feed="iex",
-    )
-
-    bars = client.get_stock_bars(request).df
-    if bars.empty:
-        raise RuntimeError(f"Alpaca returned no bars for {ticker}")
-
-    # Alpaca returns a MultiIndex; flatten into regular columns.
-    bars = bars.reset_index()
-    bars = bars.rename(columns={"symbol": "ticker", "timestamp": "timestamp"})
-
-    normalized = _normalize_bar_columns(bars, ticker=ticker)
-
-    # Keep only regular market session to match feature definitions.
-    ny_timestamps = normalized["timestamp"].dt.tz_convert(config["data"]["timezone"])
-    session_mask = (
-        ((ny_timestamps.dt.hour > config["data"]["start_hour"]) |
-         ((ny_timestamps.dt.hour == config["data"]["start_hour"]) &
-          (ny_timestamps.dt.minute >= config["data"]["start_minute"])))
-        &
-        ((ny_timestamps.dt.hour < config["data"]["end_hour"]) |
-         ((ny_timestamps.dt.hour == config["data"]["end_hour"]) &
-          (ny_timestamps.dt.minute == config["data"]["end_minute"])))
-    )
-
-    normalized = normalized.loc[session_mask].reset_index(drop=True)
     return normalized
 
 
@@ -184,23 +145,16 @@ def download_ticker_data(
     # Step 1: return cached parquet when available.
     if cache_path.exists() and not force_refresh:
         cached = pd.read_parquet(cache_path)
+        required = {"timestamp", "open", "high", "low", "close", "volume"}
+        if not required.issubset(set(cached.columns)):
+            cached = _normalize_bar_columns(cached, ticker=ticker)
         cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True)
         return cached.sort_values("timestamp").reset_index(drop=True)
 
-    source_primary = str(config["data"]["source_primary"]).lower()
-
-    # Step 2: use only the configured source and fail fast on provider errors.
-    if source_primary == "alpaca":
-        frame = _download_alpaca(ticker=ticker, interval=interval, history_days=history_days, config=config)
-        frame.to_parquet(cache_path, index=False)
-        return frame
-
-    if source_primary == "yfinance":
-        frame = _download_yfinance(ticker=ticker, interval=interval, history_days=history_days)
-        frame.to_parquet(cache_path, index=False)
-        return frame
-
-    raise ValueError(f"Unsupported data source_primary: {source_primary}")
+    # Step 2: download from open yfinance source.
+    frame = _download_yfinance(ticker=ticker, interval=interval, history_days=history_days)
+    frame.to_parquet(cache_path, index=False)
+    return frame
 
 
 def download_universe(config: dict[str, Any], force_refresh: bool = False) -> dict[str, pd.DataFrame]:

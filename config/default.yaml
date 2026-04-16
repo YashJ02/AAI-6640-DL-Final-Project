@@ -14,10 +14,9 @@ tickers:
 
 # Market data download/caching parameters.
 data:
-  source_primary: "alpaca"
   interval: "5Min"
   intervals_supported: ["1Min", "5Min", "15Min"]
-  history_days: 252
+  history_days: 55
   cache_dir: "data/raw"
   timezone: "America/New_York"
   start_hour: 9
@@ -63,10 +62,7 @@ dataset:
   num_workers: 0
   pin_memory: true
   walk_forward_folds:
-    - {train_months: [1, 7], val_month: 8, test_month: 9}
-    - {train_months: [2, 8], val_month: 9, test_month: 10}
-    - {train_months: [3, 9], val_month: 10, test_month: 11}
-    - {train_months: [4, 10], val_month: 11, test_month: 12}
+    - {train_months: [1, 1], val_month: 2, test_month: 3}
 
 # Model architecture defaults.
 models:

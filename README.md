@@ -70,12 +70,7 @@ AAI-6640-DL-Final-Project/
 pip install -r requirements.txt
 ```
 
-1. Add environment variables in `.env` when using Alpaca as your selected data source:
-
-```env
-ALPACA_API_KEY=your_key
-ALPACA_API_SECRET=your_secret
-```
+1. No API credentials are required for the default open-data setup (`yfinance`).
 
 ## Execution Guide (Plan-Aligned)
 

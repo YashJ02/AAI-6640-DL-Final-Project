@@ -52,12 +52,30 @@ TEMPORAL_COLUMNS = [
 ]
 
 
-def _pick_column(frame: pd.DataFrame, prefix: str) -> pd.Series:
-    """Return first indicator column that matches a given prefix."""
+def _nan_series(index: pd.Index) -> pd.Series:
+    """Create an aligned NaN series for cases where an indicator is unavailable."""
+    return pd.Series(np.nan, index=index, dtype=float)
+
+
+def _to_series_or_nan(values: pd.Series | None, index: pd.Index) -> pd.Series:
+    """Convert indicator output to aligned series, defaulting to NaN when missing."""
+    if values is None:
+        return _nan_series(index)
+
+    series = pd.Series(values)
+    return series.reindex(index).astype(float)
+
+
+def _pick_column(frame: pd.DataFrame | None, prefix: str, index: pd.Index) -> pd.Series:
+    """Return first indicator column matching prefix or NaN series when unavailable."""
+    if frame is None or frame.empty:
+        return _nan_series(index)
+
     candidates = [col for col in frame.columns if col.startswith(prefix)]
     if not candidates:
-        raise ValueError(f"No pandas_ta column starts with prefix: {prefix}")
-    return frame[candidates[0]]
+        return _nan_series(index)
+
+    return _to_series_or_nan(frame[candidates[0]], index)
 
 
 def add_stationary_ohlcv_features(frame: pd.DataFrame) -> pd.DataFrame:
@@ -65,7 +83,9 @@ def add_stationary_ohlcv_features(frame: pd.DataFrame) -> pd.DataFrame:
     df = frame.copy()
 
     # Log return is additive and largely scale-invariant across price levels.
-    df["log_return"] = np.log(df["close"] / df["close"].shift(1))
+    close_prev = df["close"].shift(1).replace(0.0, np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["log_return"] = np.log(df["close"] / close_prev)
 
     # High-low range captures intrabar volatility as a fraction of price.
     df["hl_range"] = (df["high"] - df["low"]) / df["close"].replace(0.0, np.nan)
@@ -79,7 +99,12 @@ def add_stationary_ohlcv_features(frame: pd.DataFrame) -> pd.DataFrame:
     ) / df["close"].replace(0.0, np.nan)
 
     # Log volume change makes volume more stationary across sessions.
-    df["volume_log_change"] = np.log(df["volume"] / df["volume"].shift(1))
+    volume_prev = df["volume"].shift(1).replace(0.0, np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["volume_log_change"] = np.log(df["volume"] / volume_prev)
+
+    # Replace divide-by-zero infinities so warm-up cleanup can safely drop them.
+    df[STATIONARY_COLUMNS] = df[STATIONARY_COLUMNS].replace([np.inf, -np.inf], np.nan)
 
     return df
 
@@ -112,9 +137,9 @@ def add_technical_indicators(frame: pd.DataFrame, technical_cfg: dict[str, Any])
         slow=technical_cfg["macd_slow"],
         signal=technical_cfg["macd_signal"],
     )
-    df["macd_line"] = _pick_column(macd, "MACD_")
-    df["macd_signal"] = _pick_column(macd, "MACDs_")
-    df["macd_hist"] = _pick_column(macd, "MACDh_")
+    df["macd_line"] = _pick_column(macd, "MACD_", df.index)
+    df["macd_signal"] = _pick_column(macd, "MACDs_", df.index)
+    df["macd_hist"] = _pick_column(macd, "MACDh_", df.index)
 
     # Bollinger bands and width for volatility regime cues.
     bbands = ta.bbands(
@@ -122,27 +147,30 @@ def add_technical_indicators(frame: pd.DataFrame, technical_cfg: dict[str, Any])
         length=technical_cfg["bb_period"],
         std=technical_cfg["bb_std"],
     )
-    df["bb_upper"] = _pick_column(bbands, "BBU_")
-    df["bb_lower"] = _pick_column(bbands, "BBL_")
-    df["bb_width"] = _pick_column(bbands, "BBB_")
+    df["bb_upper"] = _pick_column(bbands, "BBU_", df.index)
+    df["bb_lower"] = _pick_column(bbands, "BBL_", df.index)
+    df["bb_width"] = _pick_column(bbands, "BBB_", df.index)
 
     # Exponential moving averages at short and medium horizons.
-    df["ema_9"] = ta.ema(df["close"], length=technical_cfg["ema_fast"])
-    df["ema_21"] = ta.ema(df["close"], length=technical_cfg["ema_slow"])
+    df["ema_9"] = _to_series_or_nan(ta.ema(df["close"], length=technical_cfg["ema_fast"]), df.index)
+    df["ema_21"] = _to_series_or_nan(ta.ema(df["close"], length=technical_cfg["ema_slow"]), df.index)
 
     # ATR captures absolute volatility in price units.
-    df["atr"] = ta.atr(
-        high=df["high"],
-        low=df["low"],
-        close=df["close"],
-        length=technical_cfg["atr_period"],
+    df["atr"] = _to_series_or_nan(
+        ta.atr(
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            length=technical_cfg["atr_period"],
+        ),
+        df.index,
     )
 
     # VWAP anchored by trading session.
     df["vwap"] = _compute_intraday_vwap(df)
 
     # Volume trend and trend-strength signals.
-    df["obv"] = ta.obv(close=df["close"], volume=df["volume"])
+    df["obv"] = _to_series_or_nan(ta.obv(close=df["close"], volume=df["volume"]), df.index)
 
     adx = ta.adx(
         high=df["high"],
@@ -150,7 +178,7 @@ def add_technical_indicators(frame: pd.DataFrame, technical_cfg: dict[str, Any])
         close=df["close"],
         length=technical_cfg["adx_period"],
     )
-    df["adx"] = _pick_column(adx, "ADX_")
+    df["adx"] = _pick_column(adx, "ADX_", df.index)
 
     stoch = ta.stoch(
         high=df["high"],
@@ -160,27 +188,36 @@ def add_technical_indicators(frame: pd.DataFrame, technical_cfg: dict[str, Any])
         d=technical_cfg["stoch_d"],
         smooth_k=3,
     )
-    df["stoch_k"] = _pick_column(stoch, "STOCHk_")
-    df["stoch_d"] = _pick_column(stoch, "STOCHd_")
+    df["stoch_k"] = _pick_column(stoch, "STOCHk_", df.index)
+    df["stoch_d"] = _pick_column(stoch, "STOCHd_", df.index)
 
-    df["cci"] = ta.cci(
-        high=df["high"],
-        low=df["low"],
-        close=df["close"],
-        length=technical_cfg["cci_period"],
+    df["cci"] = _to_series_or_nan(
+        ta.cci(
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            length=technical_cfg["cci_period"],
+        ),
+        df.index,
     )
-    df["williams_r"] = ta.willr(
-        high=df["high"],
-        low=df["low"],
-        close=df["close"],
-        length=technical_cfg["willr_period"],
+    df["williams_r"] = _to_series_or_nan(
+        ta.willr(
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            length=technical_cfg["willr_period"],
+        ),
+        df.index,
     )
-    df["mfi"] = ta.mfi(
-        high=df["high"],
-        low=df["low"],
-        close=df["close"],
-        volume=df["volume"],
-        length=technical_cfg["mfi_period"],
+    df["mfi"] = _to_series_or_nan(
+        ta.mfi(
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            volume=df["volume"],
+            length=technical_cfg["mfi_period"],
+        ),
+        df.index,
     )
 
     return df

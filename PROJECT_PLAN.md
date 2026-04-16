@@ -21,7 +21,7 @@ AAI-6640-DL-Final-Project/
 │   └── raw/                        # Cached parquet files (gitignored)
 ├── src/
 │   ├── data/
-│   │   ├── download.py             # Alpaca API download + caching
+│   │   ├── download.py             # yfinance download + caching
 │   │   ├── features.py             # Stationary OHLCV + 18 indicators + Fourier time features
 │   │   ├── labels.py               # Volatility-normalized adaptive label generation
 │   │   └── dataset.py              # PyTorch Dataset, windowing, walk-forward splits
@@ -67,12 +67,12 @@ AAI-6640-DL-Final-Project/
 
 ### 1.2 Data Source
 
-- **Primary**: **Alpaca Markets API** (`alpaca-py`) — free, no funding required, 10+ years of historical intraday data, 10k API calls/min
-- **Data source policy**: single configured provider
+- **Provider**: **yfinance** (open data, no API key required)
+- **Data source policy**: single provider (yfinance)
 - **Intervals**: 1-minute, 5-minute, 15-minute
 - **History**: 252 trading days (~1 year) of 5-minute bars per ticker
 - **Storage**: Cache as parquet files in `data/raw/`
-- **Auth**: Free Alpaca API key + secret (stored in `.env`, gitignored)
+- **Auth**: Not required for default setup
 
 ### 1.3 Features (5 stationary OHLCV + 18 indicators + 5 temporal = 28 total)
 
@@ -322,7 +322,7 @@ Down-weights easy examples, focuses training on hard boundary cases (neutral vs 
 | Step | What                                               | Depends On |
 |------|----------------------------------------------------|------------|
 | 1    | Scaffolding (dirs, requirements, .gitignore, ruff) | —          |
-| 2    | Data download + caching (Alpaca API)               | Step 1     |
+| 2    | Data download + caching (yfinance)                 | Step 1     |
 | 3    | Feature engineering (stationary OHLCV + indicators + Fourier) | Step 2 |
 | 4    | Label generation (volatility-normalized)           | Step 3     |
 | 5    | PyTorch Dataset + walk-forward DataLoaders         | Step 4     |
@@ -348,10 +348,8 @@ numpy>=2.4
 pandas>=3.0
 
 # Data
-alpaca-py>=0.43
 yfinance>=1.2
 pandas-ta>=0.3.14b
-python-dotenv>=1.2
 
 # ML / Evaluation
 scikit-learn>=1.8
