@@ -15,7 +15,6 @@ tickers:
 # Market data download/caching parameters.
 data:
   source_primary: "alpaca"
-  source_fallback: "yfinance"
   interval: "5Min"
   intervals_supported: ["1Min", "5Min", "15Min"]
   history_days: 252

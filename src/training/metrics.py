@@ -5,14 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from scipy.stats import chi2
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
-
-try:
-    from scipy.stats import chi2
-
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
 
 
 def compute_classification_metrics(
@@ -74,11 +68,7 @@ def mcnemar_test(
 
     chi2_stat = ((n01 - n10) ** 2) / denominator
 
-    if HAS_SCIPY:
-        p_value = float(1.0 - chi2.cdf(chi2_stat, df=1))
-    else:
-        # Conservative fallback if scipy is unavailable.
-        p_value = float("nan")
+    p_value = float(1.0 - chi2.cdf(chi2_stat, df=1))
 
     return {
         "n01": float(n01),

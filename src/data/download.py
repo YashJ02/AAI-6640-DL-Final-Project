@@ -142,7 +142,7 @@ def _download_alpaca(
 
 
 def _download_yfinance(ticker: str, interval: str, history_days: int) -> pd.DataFrame:
-    """Download one ticker from yfinance as fallback."""
+    """Download one ticker from yfinance."""
     if not HAS_YFINANCE:
         raise RuntimeError("yfinance is not installed")
 
@@ -187,25 +187,20 @@ def download_ticker_data(
         cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True)
         return cached.sort_values("timestamp").reset_index(drop=True)
 
-    source_primary = config["data"]["source_primary"]
-    source_fallback = config["data"]["source_fallback"]
+    source_primary = str(config["data"]["source_primary"]).lower()
 
-    # Step 2: try primary data source first.
+    # Step 2: use only the configured source and fail fast on provider errors.
     if source_primary == "alpaca":
-        try:
-            frame = _download_alpaca(ticker=ticker, interval=interval, history_days=history_days, config=config)
-            frame.to_parquet(cache_path, index=False)
-            return frame
-        except Exception as exc:  # noqa: BLE001
-            print(f"[WARN] Alpaca download failed for {ticker}: {exc}")
+        frame = _download_alpaca(ticker=ticker, interval=interval, history_days=history_days, config=config)
+        frame.to_parquet(cache_path, index=False)
+        return frame
 
-    # Step 3: fallback to yfinance if primary failed.
-    if source_fallback == "yfinance":
+    if source_primary == "yfinance":
         frame = _download_yfinance(ticker=ticker, interval=interval, history_days=history_days)
         frame.to_parquet(cache_path, index=False)
         return frame
 
-    raise RuntimeError(f"Unable to download data for {ticker} from configured sources")
+    raise ValueError(f"Unsupported data source_primary: {source_primary}")
 
 
 def download_universe(config: dict[str, Any], force_refresh: bool = False) -> dict[str, pd.DataFrame]:

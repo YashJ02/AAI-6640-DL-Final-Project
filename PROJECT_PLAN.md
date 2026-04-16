@@ -68,7 +68,7 @@ AAI-6640-DL-Final-Project/
 ### 1.2 Data Source
 
 - **Primary**: **Alpaca Markets API** (`alpaca-py`) — free, no funding required, 10+ years of historical intraday data, 10k API calls/min
-- **Fallback**: `yfinance` — for quick testing / if Alpaca is unavailable
+- **Data source policy**: single configured provider
 - **Intervals**: 1-minute, 5-minute, 15-minute
 - **History**: 252 trading days (~1 year) of 5-minute bars per ticker
 - **Storage**: Cache as parquet files in `data/raw/`
@@ -429,7 +429,7 @@ Rules enabled:
 - [x] **Sequence length**: 60 timesteps
 - [x] **Features**: 28 total (5 stationary OHLCV + 18 indicators + 5 Fourier/temporal)
 - [x] **Demo**: Streamlit app
-- [x] **Data source**: Alpaca Markets API (primary), yfinance (fallback)
+- [x] **Data source**: single configured provider in config
 - [x] **Linting**: Ruff with pyproject.toml config
 - [x] **Loss**: Focal loss + label smoothing
 - [x] **Validation**: Walk-forward (4 folds) + McNemar's significance test

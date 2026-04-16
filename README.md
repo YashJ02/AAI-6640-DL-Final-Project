@@ -8,7 +8,7 @@ This repository implements a full end-to-end comparative study for intraday stoc
 
 The implementation follows the complete plan in `PROJECT_PLAN.md`, including:
 
-- Data download and caching (Alpaca primary, yfinance fallback)
+- Data download and caching (single selected provider via config)
 - 28-feature engineering pipeline
 - Volatility-normalized 3-class label generation
 - Walk-forward validation
@@ -70,7 +70,7 @@ AAI-6640-DL-Final-Project/
 pip install -r requirements.txt
 ```
 
-1. Add environment variables in `.env` (optional if using yfinance fallback):
+1. Add environment variables in `.env` when using Alpaca as your selected data source:
 
 ```env
 ALPACA_API_KEY=your_key
