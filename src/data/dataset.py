@@ -256,6 +256,17 @@ def _split_frame_by_range(frame: pd.DataFrame, split: WalkForwardSplit) -> dict[
     }
 
 
+def _drop_non_finite_rows(frame: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
+    """Remove rows that contain non-finite feature values before sequence windowing."""
+    df = frame.copy()
+
+    available_features = [column for column in feature_columns if column in df.columns]
+    if available_features:
+        df[available_features] = df[available_features].replace([np.inf, -np.inf], np.nan)
+
+    return df.dropna(subset=available_features + ["label"]).reset_index(drop=True)
+
+
 def create_fold_dataloaders(
     frame: pd.DataFrame,
     feature_columns: list[str],
@@ -272,10 +283,10 @@ def create_fold_dataloaders(
     val_frame = apply_indicator_normalization(splits["val"], normalization_stats)
     test_frame = apply_indicator_normalization(splits["test"], normalization_stats)
 
-    # Remove any rows with warm-up NaNs after indicators are generated.
-    train_frame = train_frame.dropna(subset=feature_columns + ["label"]).reset_index(drop=True)
-    val_frame = val_frame.dropna(subset=feature_columns + ["label"]).reset_index(drop=True)
-    test_frame = test_frame.dropna(subset=feature_columns + ["label"]).reset_index(drop=True)
+    # Guard against both NaN and +/-inf values before sequence creation.
+    train_frame = _drop_non_finite_rows(train_frame, feature_columns)
+    val_frame = _drop_non_finite_rows(val_frame, feature_columns)
+    test_frame = _drop_non_finite_rows(test_frame, feature_columns)
 
     sequence_length = int(config["dataset"]["sequence_length"])
     batch_size = int(config["dataset"]["batch_size"])

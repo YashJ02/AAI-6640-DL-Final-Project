@@ -67,6 +67,8 @@ def _build_related_feature_frame(
             rel[columns[0]] = np.log(rel["close"] / close_prev)
             rel[columns[1]] = np.log(rel["volume"] / volume_prev)
 
+        rel[columns] = rel[columns].replace([np.inf, -np.inf], np.nan)
+
         rel = rel[["timestamp"] + columns]
         rel = rel.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
 
@@ -79,6 +81,7 @@ def _build_related_feature_frame(
         return None, []
 
     merged = merged.sort_values("timestamp").reset_index(drop=True)
+    merged[related_columns] = merged[related_columns].replace([np.inf, -np.inf], np.nan)
     merged[related_columns] = merged[related_columns].ffill().fillna(0.0)
     return merged, related_columns
 
@@ -153,6 +156,10 @@ def prepare_engineered_universe(
 
         if related_feature_frame is not None and related_feature_columns:
             feature_frame = feature_frame.merge(related_feature_frame, on="timestamp", how="left")
+            feature_frame[related_feature_columns] = feature_frame[related_feature_columns].replace(
+                [np.inf, -np.inf],
+                np.nan,
+            )
             feature_frame[related_feature_columns] = feature_frame[related_feature_columns].ffill().fillna(0.0)
 
         # Step 2: generate volatility-normalized labels.
