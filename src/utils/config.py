@@ -48,15 +48,14 @@ def ensure_directories(config: dict[str, Any]) -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
 
-def set_seed(seed: int) -> None:
-    """Seed NumPy and PyTorch for deterministic behavior where possible."""
+def set_seed(seed: int, deterministic: bool = False) -> None:
+    """Seed NumPy/PyTorch and optionally force deterministic CuDNN behavior."""
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    # CuDNN flags reduce nondeterminism in recurrent/conv kernels.
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = bool(deterministic)
+    torch.backends.cudnn.benchmark = not bool(deterministic)
 
 
 def resolve_device(device_setting: str = "auto") -> torch.device:

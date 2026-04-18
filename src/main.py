@@ -66,8 +66,17 @@ def main() -> None:
 
     print("Training complete. Model summaries:")
     for model_name, model_summary in output["summary"]["models"].items():
+        accuracy = model_summary["summary"]["test_accuracy"]["mean"]
+        baseline_accuracy = model_summary["summary"]["baseline_accuracy"]["mean"]
+        delta_vs_baseline = accuracy - baseline_accuracy
         macro_f1 = model_summary["summary"]["test_macro_f1"]["mean"]
-        print(f"  - {model_name}: mean test macro F1 = {macro_f1:.4f}")
+        print(
+            "  - "
+            f"{model_name}: mean test accuracy = {accuracy:.4f}, "
+            f"macro F1 = {macro_f1:.4f}, "
+            f"baseline = {baseline_accuracy:.4f}, "
+            f"delta_vs_baseline = {delta_vs_baseline:.4f}"
+        )
 
 
 if __name__ == "__main__":

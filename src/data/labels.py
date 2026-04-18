@@ -8,9 +8,26 @@ import numpy as np
 import pandas as pd
 
 
-def compute_log_returns(close: pd.Series, horizon: int = 1) -> pd.Series:
-    """Compute log returns for the configured forecast horizon."""
-    return np.log(close.shift(-horizon) / close)
+def compute_log_returns(
+    close: pd.Series,
+    horizon: int = 1,
+    timestamps: pd.Series | None = None,
+    timezone: str = "America/New_York",
+) -> pd.Series:
+    """Compute forward log returns while dropping targets that cross session boundaries."""
+    returns = np.log(close.shift(-horizon) / close)
+
+    if timestamps is None:
+        return returns
+
+    ts = pd.to_datetime(timestamps, utc=True)
+    future_ts = ts.shift(-horizon)
+
+    local_date = ts.dt.tz_convert(timezone).dt.date
+    future_local_date = future_ts.dt.tz_convert(timezone).dt.date
+    same_session = local_date == future_local_date
+
+    return returns.where(same_session)
 
 
 def compute_ewma_variance(
@@ -22,21 +39,27 @@ def compute_ewma_variance(
     if returns.empty:
         raise ValueError("Returns series is empty")
 
-    values = returns.fillna(0.0).to_numpy(dtype=float)
+    values = returns.to_numpy(dtype=float)
     variances = np.zeros_like(values)
 
     # Initialize with sample variance so the first few values are numerically stable.
     if initial_variance is None:
-        initial_variance = float(np.var(values[: min(50, len(values))]))
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            initial_variance = 1e-8
+        else:
+            initial_variance = float(np.var(finite_values[: min(50, finite_values.size)]))
         if initial_variance <= 1e-12:
             initial_variance = 1e-8
 
     prev_var = initial_variance
+    prev_return = 0.0
     for index, value in enumerate(values):
-        # RiskMetrics recursion: sigma_t^2 = lambda * sigma_{t-1}^2 + (1-lambda) * r_{t-1}^2.
-        current_var = decay * prev_var + (1.0 - decay) * (value**2)
+        # RiskMetrics recursion uses previous realized return, not the current target return.
+        current_var = decay * prev_var + (1.0 - decay) * (prev_return**2)
         variances[index] = current_var
         prev_var = current_var
+        prev_return = float(value) if np.isfinite(value) else 0.0
 
     variance_series = pd.Series(variances, index=returns.index, name="ewma_variance")
     return variance_series, float(prev_var)
@@ -66,7 +89,12 @@ def build_labels(
 
     # Step 1: future log return over horizon (default = one bar ahead).
     horizon = int(config["dataset"]["forecast_horizon"])
-    df["future_log_return"] = compute_log_returns(df["close"], horizon=horizon)
+    df["future_log_return"] = compute_log_returns(
+        close=df["close"],
+        horizon=horizon,
+        timestamps=df["timestamp"],
+        timezone=str(config["data"]["timezone"]),
+    )
 
     # Step 2: EWMA variance/volatility with optional carried state.
     decay = float(config["labels"]["ewma_lambda"])

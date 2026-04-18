@@ -1,29 +1,29 @@
 # Core
-torch>=2.11
-numpy>=2.2.6,<2.3
-pandas>=2.2,<3.0
+torch>=2.4,<2.8
+numpy>=1.26,<2.4
+pandas>=2.1,<2.4
 
 # Data
-yfinance>=1.2
-pandas-ta>=0.4.67b0
-pyarrow>=18.0
+yfinance>=0.2.40,<0.3
+pandas-ta>=0.4.67b0,<0.5
+pyarrow>=15,<20
 
 # ML / Evaluation
-scikit-learn>=1.8
-scipy>=1.14
+scikit-learn>=1.4,<1.8
+scipy>=1.11,<1.16
 
 # Visualization
-matplotlib>=3.10
-seaborn>=0.13
-plotly>=6.7
-streamlit>=1.56
+matplotlib>=3.8,<3.11
+seaborn>=0.13,<0.14
+plotly>=5.22,<7
+streamlit>=1.36,<2
 
 # Experiment Tracking
-mlflow>=3.11
+mlflow>=2.14,<4
 
 # Config / Utilities
-pyyaml>=6.0
-tqdm>=4.67
+pyyaml>=6.0,<7
+tqdm>=4.66,<5
 
 # Linting / Quality
-ruff>=0.15
+ruff>=0.5,<1

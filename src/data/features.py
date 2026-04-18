@@ -81,9 +81,11 @@ def _pick_column(frame: pd.DataFrame | None, prefix: str, index: pd.Index) -> pd
 def add_stationary_ohlcv_features(frame: pd.DataFrame) -> pd.DataFrame:
     """Step 1: replace non-stationary OHLCV levels with return-based representations."""
     df = frame.copy()
+    local_ts = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("America/New_York")
+    session_date = local_ts.dt.date
 
     # Log return is additive and largely scale-invariant across price levels.
-    close_prev = df["close"].shift(1).replace(0.0, np.nan)
+    close_prev = df.groupby(session_date, sort=False)["close"].shift(1).replace(0.0, np.nan)
     with np.errstate(divide="ignore", invalid="ignore"):
         df["log_return"] = np.log(df["close"] / close_prev)
 
@@ -99,7 +101,7 @@ def add_stationary_ohlcv_features(frame: pd.DataFrame) -> pd.DataFrame:
     ) / df["close"].replace(0.0, np.nan)
 
     # Log volume change makes volume more stationary across sessions.
-    volume_prev = df["volume"].shift(1).replace(0.0, np.nan)
+    volume_prev = df.groupby(session_date, sort=False)["volume"].shift(1).replace(0.0, np.nan)
     with np.errstate(divide="ignore", invalid="ignore"):
         df["volume_log_change"] = np.log(df["volume"] / volume_prev)
 
@@ -147,13 +149,22 @@ def add_technical_indicators(frame: pd.DataFrame, technical_cfg: dict[str, Any])
         length=technical_cfg["bb_period"],
         std=technical_cfg["bb_std"],
     )
-    df["bb_upper"] = _pick_column(bbands, "BBU_", df.index)
-    df["bb_lower"] = _pick_column(bbands, "BBL_", df.index)
+    close_safe = df["close"].replace(0.0, np.nan)
+    df["bb_upper"] = _pick_column(bbands, "BBU_", df.index) / close_safe - 1.0
+    df["bb_lower"] = _pick_column(bbands, "BBL_", df.index) / close_safe - 1.0
     df["bb_width"] = _pick_column(bbands, "BBB_", df.index)
 
     # Exponential moving averages at short and medium horizons.
-    df["ema_9"] = _to_series_or_nan(ta.ema(df["close"], length=technical_cfg["ema_fast"]), df.index)
-    df["ema_21"] = _to_series_or_nan(ta.ema(df["close"], length=technical_cfg["ema_slow"]), df.index)
+    df["ema_9"] = (
+        _to_series_or_nan(ta.ema(df["close"], length=technical_cfg["ema_fast"]), df.index)
+        / close_safe
+        - 1.0
+    )
+    df["ema_21"] = (
+        _to_series_or_nan(ta.ema(df["close"], length=technical_cfg["ema_slow"]), df.index)
+        / close_safe
+        - 1.0
+    )
 
     # ATR captures absolute volatility in price units.
     df["atr"] = _to_series_or_nan(
@@ -164,13 +175,16 @@ def add_technical_indicators(frame: pd.DataFrame, technical_cfg: dict[str, Any])
             length=technical_cfg["atr_period"],
         ),
         df.index,
-    )
+    ) / close_safe
 
     # VWAP anchored by trading session.
-    df["vwap"] = _compute_intraday_vwap(df)
+    df["vwap"] = _compute_intraday_vwap(df) / close_safe - 1.0
 
     # Volume trend and trend-strength signals.
-    df["obv"] = _to_series_or_nan(ta.obv(close=df["close"], volume=df["volume"]), df.index)
+    obv = _to_series_or_nan(ta.obv(close=df["close"], volume=df["volume"]), df.index)
+    local_ts = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("America/New_York")
+    session_date = local_ts.dt.date
+    df["obv"] = obv.groupby(session_date, sort=False).diff().fillna(0.0)
 
     adx = ta.adx(
         high=df["high"],
@@ -219,6 +233,9 @@ def add_technical_indicators(frame: pd.DataFrame, technical_cfg: dict[str, Any])
         ),
         df.index,
     )
+
+    technical_cols = [col for col in TECHNICAL_COLUMNS if col in df.columns]
+    df[technical_cols] = df[technical_cols].replace([np.inf, -np.inf], np.nan)
 
     return df
 

@@ -74,6 +74,23 @@ pip install -r requirements.txt
 
 1. No API credentials are required for the default open-data setup (`yfinance`).
 
+### GPU/Performance Defaults
+
+The default config is tuned for consumer NVIDIA GPUs (including RTX 3050 laptops):
+
+- mixed precision (`training.use_amp: true`)
+- multi-worker data loading (`dataset.num_workers: 2`)
+- pinned-memory transfer (`dataset.pin_memory: true`)
+- optional deterministic toggle (`experiment.deterministic`)
+- validation-based class decision tuning (`training.decision_tuning`)
+
+### Data Source Notes
+
+- `yfinance` intraday intervals have provider lookback limits (notably around 60 days for 5-minute bars).
+- The default `history_days` is set to stay within practical provider limits while maximizing available data.
+- Public related-market context symbols are enabled by default (broad indices, sector ETFs, credit/commodities, and optional crypto proxy).
+- Related-symbol ingestion is fault-tolerant: symbols with transient download failures are skipped without stopping the full pipeline.
+
 ## Execution Guide (Plan-Aligned)
 
 ### Step 1: Scaffolding and Config
@@ -98,7 +115,7 @@ What this executes:
 2. Download related-context symbols defined in config.
 3. Clean/validate bars and write audit artifacts to `artifacts/data_quality/`.
 4. Engineer model features.
-5. Build EWMA volatility-normalized labels.
+5. Build EWMA volatility-normalized labels (session-aware; no overnight label leakage).
 6. Construct walk-forward-ready supervised table.
 
 ### Step 6-10: Train All Architectures
@@ -119,6 +136,7 @@ Outputs:
 
 - Checkpoints in `artifacts/checkpoints/`
 - Fold predictions in `artifacts/predictions/`
+- Epoch/fold training logs in `artifacts/training_logs/`
 - Aggregated summary in `artifacts/results_summary.json`
 
 ### Step 11-13: Evaluation

@@ -41,10 +41,13 @@ def predictions_to_position(
 
     for idx, label in enumerate(predicted_class.to_numpy(dtype=np.int64)):
         # Optional confidence filter: only act on sufficiently certain predictions.
-        if confidence_threshold is not None and confidence is not None:
-            if float(confidence.iloc[idx]) < confidence_threshold:
-                positions.append(current_position)
-                continue
+        if (
+            confidence_threshold is not None
+            and confidence is not None
+            and float(confidence.iloc[idx]) < confidence_threshold
+        ):
+            positions.append(current_position)
+            continue
 
         if label == 2:  # Up -> enter/keep long.
             current_position = 1.0
@@ -100,6 +103,16 @@ def compute_risk_metrics(
     annualized_return = mean_return * periods_per_year
     annualized_volatility = std_return * np.sqrt(periods_per_year)
 
+    # If variance is effectively zero, risk-adjusted ratios are not informative.
+    if std_return < 1e-10:
+        return {
+            "annualized_return": float(annualized_return),
+            "annualized_volatility": float(annualized_volatility),
+            "sharpe": 0.0,
+            "sortino": 0.0,
+            "calmar": 0.0,
+        }
+
     risk_free_per_period = risk_free_rate_annual / periods_per_year
     excess_return = mean_return - risk_free_per_period
 
@@ -128,20 +141,56 @@ def run_backtest(
     risk_free_rate_annual: float = 0.02,
 ) -> dict[str, Any]:
     """Simulate strategy and return equity curve plus risk/return metrics."""
-    df = frame.copy().sort_values("timestamp").reset_index(drop=True)
+    base = frame.copy()
 
-    confidence_series = df[confidence_column] if confidence_column and confidence_column in df.columns else None
+    # If multi-ticker rows are present, keep position/returns isolated by ticker,
+    # then aggregate equally by timestamp into one portfolio return stream.
+    if "ticker" in base.columns:
+        base = base.sort_values(["ticker", "timestamp"]).reset_index(drop=True)
+        base["position"] = 0.0
+        for _, ticker_idx in base.groupby("ticker", sort=False).groups.items():
+            group = base.loc[ticker_idx]
+            conf = group[confidence_column] if confidence_column and confidence_column in group.columns else None
+            positions = predictions_to_position(
+                predicted_class=group[pred_column],
+                confidence=conf,
+                confidence_threshold=confidence_threshold,
+            )
+            base.loc[ticker_idx, "position"] = positions.to_numpy(dtype=np.float64)
+        base["asset_return"] = (
+            base.groupby("ticker", sort=False)[price_column]
+            .pct_change()
+            .fillna(0.0)
+        )
+        base["strategy_return"] = (
+            base.groupby("ticker", sort=False)["position"].shift(1).fillna(0.0)
+            * base["asset_return"]
+        )
 
-    # Step 1: map predictions to executable position states.
-    df["position"] = predictions_to_position(
-        predicted_class=df[pred_column],
-        confidence=confidence_series,
-        confidence_threshold=confidence_threshold,
-    )
+        df = (
+            base.groupby("timestamp", as_index=False)
+            .agg(
+                asset_return=("asset_return", "mean"),
+                strategy_return=("strategy_return", "mean"),
+            )
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )
+    else:
+        df = base.sort_values("timestamp").reset_index(drop=True)
 
-    # Step 2: compute asset and strategy returns.
-    df["asset_return"] = df[price_column].pct_change().fillna(0.0)
-    df["strategy_return"] = df["position"].shift(1).fillna(0.0) * df["asset_return"]
+        confidence_series = df[confidence_column] if confidence_column and confidence_column in df.columns else None
+
+        # Step 1: map predictions to executable position states.
+        df["position"] = predictions_to_position(
+            predicted_class=df[pred_column],
+            confidence=confidence_series,
+            confidence_threshold=confidence_threshold,
+        )
+
+        # Step 2: compute asset and strategy returns.
+        df["asset_return"] = df[price_column].pct_change().fillna(0.0)
+        df["strategy_return"] = df["position"].shift(1).fillna(0.0) * df["asset_return"]
 
     # Step 3: compute cumulative performance curves.
     df["equity_curve"] = (1.0 + df["strategy_return"]).cumprod()

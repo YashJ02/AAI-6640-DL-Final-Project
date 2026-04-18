@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 
 
@@ -32,12 +32,12 @@ class FocalLoss(nn.Module):
         num_classes = logits.size(-1)
 
         # Build smoothed one-hot targets for soft-label cross entropy.
-        target_dist = F.one_hot(targets, num_classes=num_classes).float()
+        target_dist = functional.one_hot(targets, num_classes=num_classes).float()
         if self.label_smoothing > 0.0:
             smooth = self.label_smoothing / num_classes
             target_dist = (1.0 - self.label_smoothing) * target_dist + smooth
 
-        log_probs = F.log_softmax(logits, dim=-1)
+        log_probs = functional.log_softmax(logits, dim=-1)
         probs = log_probs.exp()
 
         # p_t is probability assigned to target distribution.

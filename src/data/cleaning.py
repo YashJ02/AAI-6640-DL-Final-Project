@@ -27,7 +27,9 @@ def _expected_bars_per_session(config: dict[str, Any]) -> int:
     if session_end <= session_start:
         raise ValueError("Session end must be greater than session start")
 
-    return ((session_end - session_start) // interval_minutes) + 1
+    duration = session_end - session_start
+    # Use [start, end) semantics for bars to avoid expecting a non-existent 16:00 bar.
+    return max(1, (duration + interval_minutes - 1) // interval_minutes)
 
 
 def clean_ohlcv_frame(
@@ -82,7 +84,8 @@ def clean_ohlcv_frame(
     session_start = int(config["data"]["start_hour"]) * 60 + int(config["data"]["start_minute"])
     session_end = int(config["data"]["end_hour"]) * 60 + int(config["data"]["end_minute"])
 
-    session_mask = (minute_of_day >= session_start) & (minute_of_day <= session_end)
+    # Keep bars in [session_start, session_end), e.g., 09:30 ... 15:55 for 5-minute bars.
+    session_mask = (minute_of_day >= session_start) & (minute_of_day < session_end)
     dropped_non_session = int((~session_mask).sum())
     df = df.loc[session_mask].reset_index(drop=True)
 
@@ -112,7 +115,10 @@ def clean_ohlcv_frame(
     df = df.loc[combined_valid].reset_index(drop=True)
 
     # 4) Remove extreme per-bar anomalies likely caused by bad ticks.
-    close_prev = df["close"].shift(1).replace(0.0, np.nan)
+    # Compute returns within each trading session so overnight gaps are not treated as bad ticks.
+    local_ts = df["timestamp"].dt.tz_convert(config["data"]["timezone"])
+    session_date = local_ts.dt.date
+    close_prev = df.groupby(session_date, sort=False)["close"].shift(1).replace(0.0, np.nan)
     with np.errstate(divide="ignore", invalid="ignore"):
         log_ret = np.log(df["close"] / close_prev)
 

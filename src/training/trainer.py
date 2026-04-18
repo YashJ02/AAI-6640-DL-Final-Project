@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import combinations
@@ -21,8 +22,8 @@ from src.models.tft import TemporalFusionTransformerModel
 from src.training.losses import FocalLoss
 from src.training.metrics import (
     compute_classification_metrics,
-    mcnemar_test,
     majority_class_baseline,
+    mcnemar_test,
     summarize_fold_metrics,
 )
 
@@ -130,6 +131,8 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     grad_clip_norm: float | None = None,
+    scaler: torch.amp.GradScaler | None = None,
+    use_amp: bool = False,
 ) -> dict[str, Any]:
     """Run one train/eval epoch and return metrics plus raw predictions."""
     is_train = optimizer is not None
@@ -140,6 +143,7 @@ def _run_epoch(
 
     all_true: list[int] = []
     all_pred: list[int] = []
+    all_prob: list[np.ndarray] = []
 
     for x, y, ticker_id in loader:
         x = x.to(device)
@@ -150,14 +154,29 @@ def _run_epoch(
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(is_train):
-            logits = model(x, ticker_id=ticker_id)
-            loss = criterion(logits, y)
+            autocast_ctx = (
+                torch.autocast(device_type="cuda", dtype=torch.float16)
+                if use_amp and device.type == "cuda"
+                else nullcontext()
+            )
+            with autocast_ctx:
+                logits = model(x, ticker_id=ticker_id)
+                loss = criterion(logits, y)
 
             if is_train:
-                loss.backward()
-                if grad_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-                optimizer.step()
+                if scaler is not None and use_amp and device.type == "cuda":
+                    scaler.scale(loss).backward()
+                    if grad_clip_norm is not None:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    if grad_clip_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+                    optimizer.step()
+
                 if scheduler is not None:
                     scheduler.step()
 
@@ -166,8 +185,10 @@ def _run_epoch(
         total_samples += batch_size
 
         preds = logits.argmax(dim=1)
+        probs = torch.softmax(logits, dim=1)
         all_true.extend(y.detach().cpu().numpy().tolist())
         all_pred.extend(preds.detach().cpu().numpy().tolist())
+        all_prob.append(probs.detach().cpu().numpy())
 
     if total_samples == 0:
         return {
@@ -178,17 +199,82 @@ def _run_epoch(
             "classification_report": {},
             "y_true": np.array([], dtype=np.int64),
             "y_pred": np.array([], dtype=np.int64),
+            "y_prob": np.empty((0, 0), dtype=np.float32),
         }
 
     y_true_arr = np.array(all_true, dtype=np.int64)
     y_pred_arr = np.array(all_pred, dtype=np.int64)
+    y_prob_arr = np.concatenate(all_prob, axis=0) if all_prob else np.empty((0, 0), dtype=np.float32)
 
     metrics = compute_classification_metrics(y_true=y_true_arr, y_pred=y_pred_arr)
     metrics["loss"] = total_loss / total_samples
     metrics["y_true"] = y_true_arr
     metrics["y_pred"] = y_pred_arr
+    metrics["y_prob"] = y_prob_arr
 
     return metrics
+
+
+def _predict_with_class_biases(y_prob: np.ndarray, class_biases: np.ndarray) -> np.ndarray:
+    """Apply class-specific logit-space biases to probabilities and return class decisions."""
+    if y_prob.size == 0:
+        return np.array([], dtype=np.int64)
+
+    safe_prob = np.clip(y_prob, 1e-8, 1.0)
+    adjusted = np.log(safe_prob) + class_biases.reshape(1, -1)
+    return adjusted.argmax(axis=1).astype(np.int64)
+
+
+def _tune_class_biases(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    bias_grid: list[float],
+    objective_metric: str = "macro_f1",
+) -> tuple[np.ndarray, float]:
+    """Grid-search class decision biases on validation set for a selected objective."""
+    if y_prob.size == 0:
+        return np.zeros(3, dtype=np.float64), float("nan")
+
+    if objective_metric not in {"macro_f1", "accuracy"}:
+        objective_metric = "macro_f1"
+
+    baseline_pred = y_prob.argmax(axis=1).astype(np.int64)
+    baseline_metrics = compute_classification_metrics(y_true=y_true, y_pred=baseline_pred)
+
+    best_bias = np.zeros(3, dtype=np.float64)
+    best_score = float(baseline_metrics[objective_metric])
+
+    for down_bias in bias_grid:
+        for up_bias in bias_grid:
+            candidate = np.array([float(down_bias), 0.0, float(up_bias)], dtype=np.float64)
+            y_pred = _predict_with_class_biases(y_prob, candidate)
+            candidate_score = float(
+                compute_classification_metrics(y_true=y_true, y_pred=y_pred)[objective_metric]
+            )
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_bias = candidate
+
+    return best_bias, best_score
+
+
+def _write_fold_history(model_name: str, fold_id: int, history: list[dict[str, float]]) -> str:
+    """Persist epoch-level metrics for fold diagnostics and overfitting analysis."""
+    logs_dir = Path("artifacts") / "training_logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    path = logs_dir / f"{model_name}_fold_{fold_id}_history.csv"
+    if not history:
+        path.touch(exist_ok=True)
+        return str(path)
+
+    fieldnames = list(history[0].keys())
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(history)
+
+    return str(path)
 
 
 def _save_checkpoint(
@@ -231,7 +317,27 @@ def train_one_fold(
 
     model = build_model(model_name, config).to(device)
 
-    class_weights = fold_bundle["class_weights"].to(device)
+    if len(train_loader) == 0 or len(val_loader) == 0 or len(test_loader) == 0:
+        raise ValueError(
+            f"Fold {fold.fold_id} has empty loader(s): "
+            f"train={len(train_loader)}, val={len(val_loader)}, test={len(test_loader)}"
+        )
+
+    if bool(config["training"].get("use_torch_compile", False)) and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode=str(config["training"].get("compile_mode", "default")))
+        except Exception as exc:  # pragma: no cover
+            print(f"[warn] torch.compile disabled for {model_name} fold {fold.fold_id}: {exc}")
+
+    use_class_weights = bool(config["training"].get("use_class_weights", True))
+    if use_class_weights:
+        class_weights = fold_bundle["class_weights"].to(device)
+    else:
+        class_weights = torch.ones(
+            int(config["models"].get("num_classes", 3)),
+            dtype=torch.float32,
+            device=device,
+        )
     criterion = FocalLoss(
         gamma=float(config["training"]["focal_loss"]["gamma"]),
         alpha=class_weights,
@@ -257,7 +363,11 @@ def train_one_fold(
     early_stopping = EarlyStopping(
         patience=int(config["training"]["early_stopping_patience"]),
         mode="max",
+        min_delta=float(config["training"].get("early_stopping_min_delta", 0.0)),
     )
+
+    use_amp = bool(config["training"].get("use_amp", False)) and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     checkpoint_path = (
         Path(config["training"]["checkpoint_dir"])
@@ -294,6 +404,8 @@ def train_one_fold(
                 optimizer=optimizer,
                 scheduler=scheduler,
                 grad_clip_norm=float(config["training"]["gradient_clip_norm"]),
+                scaler=scaler,
+                use_amp=use_amp,
             )
 
             val_metrics = _run_epoch(
@@ -301,6 +413,7 @@ def train_one_fold(
                 loader=val_loader,
                 criterion=criterion,
                 device=device,
+                use_amp=use_amp,
             )
 
             epoch_record = {
@@ -309,6 +422,8 @@ def train_one_fold(
                 "train_macro_f1": float(train_metrics["macro_f1"]),
                 "val_loss": float(val_metrics["loss"]),
                 "val_macro_f1": float(val_metrics["macro_f1"]),
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
+                "f1_gap_val_minus_train": float(val_metrics["macro_f1"] - train_metrics["macro_f1"]),
             }
             history.append(epoch_record)
 
@@ -335,14 +450,61 @@ def train_one_fold(
         if not checkpoint_path.exists():
             _save_checkpoint(model, optimizer, epoch=max_epochs, metric=float("nan"), path=checkpoint_path)
 
-        # Evaluate test using best checkpoint.
+        # Evaluate validation/test using best checkpoint.
         _load_checkpoint(model, checkpoint_path, device)
+        best_val_metrics = _run_epoch(
+            model=model,
+            loader=val_loader,
+            criterion=criterion,
+            device=device,
+            use_amp=use_amp,
+        )
         test_metrics = _run_epoch(
             model=model,
             loader=test_loader,
             criterion=criterion,
             device=device,
+            use_amp=use_amp,
         )
+
+        tuned_val_macro_f1 = float(best_val_metrics["macro_f1"])
+        tuned_val_accuracy = float(best_val_metrics["accuracy"])
+        tuned_val_objective_score = float(best_val_metrics["macro_f1"])
+        class_biases = np.zeros(3, dtype=np.float64)
+
+        decision_cfg = config["training"].get("decision_tuning", {})
+        decision_metric = str(decision_cfg.get("metric", "macro_f1")).lower()
+        if decision_metric not in {"macro_f1", "accuracy"}:
+            decision_metric = "macro_f1"
+
+        if bool(decision_cfg.get("enabled", False)):
+            bias_grid = [float(value) for value in decision_cfg.get("bias_grid", [-0.5, 0.0, 0.5])]
+            class_biases, tuned_val_objective_score = _tune_class_biases(
+                y_true=best_val_metrics["y_true"],
+                y_prob=best_val_metrics["y_prob"],
+                bias_grid=bias_grid,
+                objective_metric=decision_metric,
+            )
+
+            tuned_val_pred = _predict_with_class_biases(best_val_metrics["y_prob"], class_biases)
+            tuned_val_metrics = compute_classification_metrics(
+                y_true=best_val_metrics["y_true"],
+                y_pred=tuned_val_pred,
+            )
+            tuned_val_macro_f1 = float(tuned_val_metrics["macro_f1"])
+            tuned_val_accuracy = float(tuned_val_metrics["accuracy"])
+
+            tuned_test_pred = _predict_with_class_biases(test_metrics["y_prob"], class_biases)
+            tuned_test_metrics = compute_classification_metrics(
+                y_true=test_metrics["y_true"],
+                y_pred=tuned_test_pred,
+            )
+
+            test_metrics["accuracy"] = float(tuned_test_metrics["accuracy"])
+            test_metrics["macro_f1"] = float(tuned_test_metrics["macro_f1"])
+            test_metrics["confusion_matrix"] = tuned_test_metrics["confusion_matrix"]
+            test_metrics["classification_report"] = tuned_test_metrics["classification_report"]
+            test_metrics["y_pred"] = tuned_test_pred
 
         if HAS_MLFLOW:
             mlflow.log_metrics(
@@ -350,6 +512,10 @@ def train_one_fold(
                     "test_loss": float(test_metrics["loss"]),
                     "test_accuracy": float(test_metrics["accuracy"]),
                     "test_macro_f1": float(test_metrics["macro_f1"]),
+                    "best_checkpoint_val_macro_f1": float(best_val_metrics["macro_f1"]),
+                    "tuned_val_macro_f1": float(tuned_val_macro_f1),
+                    "tuned_val_accuracy": float(tuned_val_accuracy),
+                    "tuned_val_objective_score": float(tuned_val_objective_score),
                 }
             )
             mlflow.log_artifact(str(checkpoint_path))
@@ -365,6 +531,12 @@ def train_one_fold(
         "fold_id": fold.fold_id,
         "best_epoch": best_epoch,
         "best_val_macro_f1": best_val_f1,
+        "best_checkpoint_val_macro_f1": float(best_val_metrics["macro_f1"]),
+        "tuned_val_macro_f1": float(tuned_val_macro_f1),
+        "tuned_val_accuracy": float(tuned_val_accuracy),
+        "decision_tuning_metric": decision_metric,
+        "tuned_val_objective_score": float(tuned_val_objective_score),
+        "decision_class_biases": class_biases,
         "test_loss": float(test_metrics["loss"]),
         "test_accuracy": float(test_metrics["accuracy"]),
         "test_macro_f1": float(test_metrics["macro_f1"]),
@@ -373,9 +545,17 @@ def train_one_fold(
         "baseline_accuracy": baseline["accuracy"],
         "baseline_macro_f1": baseline["macro_f1"],
         "history": history,
+        "history_log_path": (
+            _write_fold_history(model_name, fold.fold_id, history)
+            if bool(config["training"].get("save_training_logs", True))
+            else ""
+        ),
         "checkpoint_path": str(checkpoint_path),
+        "val_y_true": best_val_metrics["y_true"],
+        "val_y_prob": best_val_metrics["y_prob"],
         "y_true": test_metrics["y_true"],
         "y_pred": test_metrics["y_pred"],
+        "y_prob": test_metrics["y_prob"],
     }
 
     return result

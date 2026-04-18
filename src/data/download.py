@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,18 @@ def _to_yfinance_interval(interval: str) -> str:
     if unit != "minute":
         raise ValueError(f"Unsupported yfinance interval unit: {unit}")
     return f"{qty}m"
+
+
+def _max_intraday_history_days(interval: str) -> int:
+    """Return practical yfinance lookback cap for configured intraday interval."""
+    qty, unit = _parse_interval(interval)
+    if unit != "minute":
+        return 3650
+
+    # yfinance intraday bars are capped by provider windows.
+    if qty == 1:
+        return 7
+    return 60
 
 
 def _cache_file_path(cache_dir: Path, ticker: str, interval: str, history_days: int) -> Path:
@@ -122,16 +135,30 @@ def _download_yfinance(ticker: str, interval: str, history_days: int) -> pd.Data
         raise RuntimeError("yfinance is not installed")
 
     yf_interval = _to_yfinance_interval(interval)
-    raw = yf.download(
-        tickers=ticker,
-        period=f"{history_days + 5}d",
-        interval=yf_interval,
-        progress=False,
-        auto_adjust=False,
-        threads=False,
-    )
+    max_days = _max_intraday_history_days(interval)
+    period_days = max(1, min(history_days + 5, max_days))
+
+    raw = pd.DataFrame()
+    last_error: Exception | None = None
+    for _ in range(3):
+        try:
+            raw = yf.download(
+                tickers=ticker,
+                period=f"{period_days}d",
+                interval=yf_interval,
+                progress=False,
+                auto_adjust=False,
+                threads=False,
+                group_by="column",
+            )
+            if not raw.empty:
+                break
+        except Exception as exc:  # pragma: no cover
+            last_error = exc
 
     if raw.empty:
+        if last_error is not None:
+            raise RuntimeError(f"yfinance download failed for {ticker}: {last_error}") from last_error
         raise RuntimeError(f"yfinance returned no bars for {ticker}")
 
     raw = raw.reset_index()
@@ -225,10 +252,16 @@ def download_related_universe(
 
     outputs: dict[str, pd.DataFrame] = {}
     for symbol in tqdm(symbols, desc="Downloading related symbols"):
-        outputs[symbol] = download_related_symbol_data(
-            symbol=symbol,
-            config=config,
-            force_refresh=force_refresh,
-        )
+        try:
+            outputs[symbol] = download_related_symbol_data(
+                symbol=symbol,
+                config=config,
+                force_refresh=force_refresh,
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Skipping related symbol {symbol} after download failure: {exc}",
+                stacklevel=2,
+            )
 
     return outputs

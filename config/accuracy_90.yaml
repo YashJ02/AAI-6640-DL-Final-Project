@@ -1,0 +1,192 @@
+experiment:
+  name_prefix: intraday_direction
+  random_seed: 42
+  deterministic: false
+  device: auto
+tickers:
+  technology:
+    - AAPL
+    - MSFT
+    - NVDA
+    - GOOGL
+    - META
+    - AMZN
+  financials:
+    - JPM
+    - BAC
+    - GS
+    - MS
+    - WFC
+    - C
+  healthcare:
+    - JNJ
+    - UNH
+    - PFE
+    - ABT
+    - MRK
+    - TMO
+  energy:
+    - XOM
+    - CVX
+    - COP
+    - SLB
+    - EOG
+    - MPC
+  consumer_discretionary:
+    - TSLA
+    - HD
+    - NKE
+    - MCD
+    - SBUX
+    - TJX
+data:
+  interval: 5Min
+  intervals_supported:
+    - 1Min
+    - 5Min
+    - 15Min
+  history_days: 58
+  use_related_features: true
+  related_include_realized_vol: false
+  related_symbols:
+    - SPY
+    - QQQ
+    - ^VIX
+    - IWM
+    - DIA
+    - TLT
+    - GLD
+    - DX-Y.NYB
+  cache_dir: data/raw
+  timezone: America/New_York
+  start_hour: 9
+  start_minute: 30
+  end_hour: 16
+  end_minute: 0
+cleaning:
+  enabled: true
+  min_session_coverage: 0.85
+  max_abs_log_return: 0.2
+  max_intrabar_range: 0.25
+  drop_zero_volume: true
+features:
+  include_stationary_ohlcv: true
+  include_technical_indicators: true
+  include_fourier_time: true
+  drop_warmup_nans: true
+  technical:
+    rsi_period: 14
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    bb_period: 20
+    bb_std: 2.0
+    ema_fast: 9
+    ema_slow: 21
+    atr_period: 14
+    adx_period: 14
+    stoch_k: 14
+    stoch_d: 3
+    cci_period: 20
+    willr_period: 14
+    mfi_period: 14
+labels:
+  ewma_lambda: 0.94
+  threshold_down: -2.0
+  threshold_up: 2.0
+  neutral_class: 1
+  per_fold_adaptive_thresholds:
+    enabled: false
+    down_quantile: 0.33
+    up_quantile: 0.67
+dataset:
+  sequence_length: 60
+  forecast_horizon: 1
+  batch_size: 192
+  num_workers: 2
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 1
+  weighted_sampler: false
+  split_mode: sessions
+  session_split:
+    train_sessions: 24
+    val_sessions: 8
+    test_sessions: 8
+    step_sessions: 5
+    max_folds: 1
+  walk_forward_folds:
+    - train_months:
+        - 1
+        - 1
+      val_month: 2
+      test_month: 3
+models:
+  num_features: 28
+  num_classes: 3
+  ticker_vocab_size: 30
+  lstm:
+    hidden_size: 256
+    num_layers: 3
+    dropout: 0.3
+    attention_size: 256
+    fc_hidden: 128
+  tft:
+    hidden_size: 128
+    attention_heads: 4
+    ticker_embedding_dim: 16
+    dropout: 0.2
+  cnn_lstm:
+    conv_channels: 64
+    conv_kernel_size: 3
+    dilations:
+      - 1
+      - 2
+      - 4
+    lstm_hidden_size: 128
+    lstm_layers: 2
+    dropout: 0.3
+    fc_hidden: 128
+training:
+  max_epochs: 12
+  early_stopping_patience: 4
+  early_stopping_min_delta: 0.0005
+  learning_rate: 0.0008
+  weight_decay: 1.0e-05
+  warmup_ratio: 0.15
+  gradient_clip_norm: 1.0
+  label_smoothing: 0.0
+  use_class_weights: false
+  use_amp: true
+  use_torch_compile: false
+  compile_mode: reduce-overhead
+  save_training_logs: true
+  decision_tuning:
+    enabled: true
+    metric: accuracy
+    bias_grid:
+      - -0.8
+      - -0.6
+      - -0.4
+      - -0.2
+      - 0.0
+      - 0.2
+      - 0.4
+      - 0.6
+      - 0.8
+  focal_loss:
+    gamma: 2.0
+  checkpoint_dir: artifacts/checkpoints
+  log_every_n_steps: 50
+evaluation:
+  confidence_threshold: 0.6
+  mc_dropout_passes: 30
+  backtest_days: 30
+  risk_free_rate_annual: 0.02
+  high_vol_atr_percentile: 0.75
+mlflow:
+  tracking_uri: file:./mlruns
+  experiment_names:
+    lstm: intraday_lstm
+    tft: intraday_tft
+    cnn_lstm: intraday_cnn_lstm
