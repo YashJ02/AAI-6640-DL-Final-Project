@@ -273,17 +273,21 @@ ruff check .
 
 ## 13) Contributions
 
-Based on repository history and current project scope:
+Team contribution breakdown:
+
+- **Ruthvik Bandari**
+   - Project idea, ideation, and project description
+   - Final training strategy decisions
+   - Model cross-fold validation and final decision support (jointly with Om)
+
+- **Om Patel**
+   - Complete frontend implementation
+   - Model validation workflow
+   - Final training and cross-fold validation decisions (jointly with Ruthvik)
 
 - **Yash Jain**
-  - End-to-end project implementation and integration
-  - Pipeline orchestration, model comparison framework, and dashboard integration
-- **Om Patel**
-  - Core model experimentation and training/evaluation iteration support
-- **Ruthvik Bandari**
-  - Presentation, project communication narrative, and delivery framing
-
-If you want, this section can be converted to a formal “who did what” table with exact module/file ownership.
+   - Dataset collection
+   - Project skeleton setup
 
 ---
 
