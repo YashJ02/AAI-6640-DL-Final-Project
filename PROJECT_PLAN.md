@@ -39,8 +39,8 @@ AAI-6640-DL-Final-Project/
 │   │   └── volatility_analysis.py  # High-vol vs low-vol breakdown
 │   └── utils/
 │       └── config.py               # YAML config loader
-├── app/
-│   └── streamlit_app.py            # Streamlit demo dashboard
+├── frontend/
+│   └── src/                        # Next.js dashboard source
 ├── notebooks/
 │   ├── 01_data_exploration.ipynb
 │   ├── 02_training.ipynb
@@ -57,11 +57,11 @@ AAI-6640-DL-Final-Project/
 
 ### 1.1 Tickers (30 stocks, 6 per sector)
 
-| Sector                 | Tickers                              |
-|------------------------|--------------------------------------|
+| Sector                 | Tickers                             |
+| ---------------------- | ----------------------------------- |
 | Technology             | AAPL, MSFT, NVDA, GOOGL, META, AMZN |
 | Financials             | JPM, BAC, GS, MS, WFC, C            |
-| Healthcare             | JNJ, UNH, PFE, ABT, MRK, TMO       |
+| Healthcare             | JNJ, UNH, PFE, ABT, MRK, TMO        |
 | Energy                 | XOM, CVX, COP, SLB, EOG, MPC        |
 | Consumer Discretionary | TSLA, HD, NKE, MCD, SBUX, TJX       |
 
@@ -80,46 +80,46 @@ Raw OHLCV prices are non-stationary (price levels drift over time). We replace t
 
 **Stationary OHLCV replacements (5):**
 
-| # | Feature | Formula | Rationale |
-|---|---------|---------|-----------|
-| 1 | Log return | `ln(Close_t / Close_{t-1})` | Additive, ~normal, price-level invariant |
-| 2 | High-Low range | `(High - Low) / Close` | Intrabar volatility as fraction of price |
-| 3 | Open-Close body | `(Close - Open) / Close` | Intrabar directional move |
-| 4 | Upper shadow | `(High - max(Open,Close)) / Close` | Buying pressure rejection |
-| 5 | Volume log-change | `ln(Vol_t / Vol_{t-1})` | Stationary volume representation |
+| #   | Feature           | Formula                            | Rationale                                |
+| --- | ----------------- | ---------------------------------- | ---------------------------------------- |
+| 1   | Log return        | `ln(Close_t / Close_{t-1})`        | Additive, ~normal, price-level invariant |
+| 2   | High-Low range    | `(High - Low) / Close`             | Intrabar volatility as fraction of price |
+| 3   | Open-Close body   | `(Close - Open) / Close`           | Intrabar directional move                |
+| 4   | Upper shadow      | `(High - max(Open,Close)) / Close` | Buying pressure rejection                |
+| 5   | Volume log-change | `ln(Vol_t / Vol_{t-1})`            | Stationary volume representation         |
 
 **Technical indicators (18) — via `pandas_ta`:**
 
-| #  | Feature         | Parameters              | Category            |
-|----|-----------------|-------------------------|---------------------|
-| 6  | RSI             | period=14               | Momentum            |
-| 7  | MACD Line       | fast=12, slow=26, sig=9 | Trend               |
-| 8  | MACD Signal     | (same)                  | Trend               |
-| 9  | MACD Histogram  | (same)                  | Trend strength      |
-| 10 | Bollinger Upper | period=20, std=2        | Volatility band     |
-| 11 | Bollinger Lower | (same)                  | Volatility band     |
-| 12 | Bollinger Width | (same)                  | Volatility measure  |
-| 13 | EMA-9           | period=9                | Short-term trend    |
-| 14 | EMA-21          | period=21               | Medium-term trend   |
-| 15 | ATR             | period=14               | Volatility          |
-| 16 | VWAP            | —                       | Fair value          |
-| 17 | OBV             | —                       | Volume trend        |
-| 18 | ADX             | period=14               | Trend strength      |
-| 19 | Stochastic %K   | k=14, d=3               | Overbought/oversold |
-| 20 | Stochastic %D   | (same)                  | Smoothed momentum   |
-| 21 | CCI             | period=20               | Mean reversion      |
-| 22 | Williams %R     | period=14               | Overbought/oversold |
-| 23 | MFI             | period=14               | Volume-weighted RSI |
+| #   | Feature         | Parameters              | Category            |
+| --- | --------------- | ----------------------- | ------------------- |
+| 6   | RSI             | period=14               | Momentum            |
+| 7   | MACD Line       | fast=12, slow=26, sig=9 | Trend               |
+| 8   | MACD Signal     | (same)                  | Trend               |
+| 9   | MACD Histogram  | (same)                  | Trend strength      |
+| 10  | Bollinger Upper | period=20, std=2        | Volatility band     |
+| 11  | Bollinger Lower | (same)                  | Volatility band     |
+| 12  | Bollinger Width | (same)                  | Volatility measure  |
+| 13  | EMA-9           | period=9                | Short-term trend    |
+| 14  | EMA-21          | period=21               | Medium-term trend   |
+| 15  | ATR             | period=14               | Volatility          |
+| 16  | VWAP            | —                       | Fair value          |
+| 17  | OBV             | —                       | Volume trend        |
+| 18  | ADX             | period=14               | Trend strength      |
+| 19  | Stochastic %K   | k=14, d=3               | Overbought/oversold |
+| 20  | Stochastic %D   | (same)                  | Smoothed momentum   |
+| 21  | CCI             | period=20               | Mean reversion      |
+| 22  | Williams %R     | period=14               | Overbought/oversold |
+| 23  | MFI             | period=14               | Volume-weighted RSI |
 
 **Fourier temporal features (5) — captures intraday cyclical patterns:**
 
-| #  | Feature                    | Formula                            | Captures                     |
-|----|----------------------------|------------------------------------|------------------------------|
-| 24 | Time-of-day sin (primary)  | `sin(2*pi*t / 390)`               | Open/close volatility cycle  |
-| 25 | Time-of-day cos (primary)  | `cos(2*pi*t / 390)`               | (same, phase-shifted)        |
-| 26 | Time-of-day sin (harmonic) | `sin(4*pi*t / 390)`               | Lunch-dip / mid-day pattern  |
-| 27 | Time-of-day cos (harmonic) | `cos(4*pi*t / 390)`               | (same, phase-shifted)        |
-| 28 | Day-of-week (normalized)   | `day_index / 4.0` (Mon=0, Fri=1)  | Weekly seasonality           |
+| #   | Feature                    | Formula                          | Captures                    |
+| --- | -------------------------- | -------------------------------- | --------------------------- |
+| 24  | Time-of-day sin (primary)  | `sin(2*pi*t / 390)`              | Open/close volatility cycle |
+| 25  | Time-of-day cos (primary)  | `cos(2*pi*t / 390)`              | (same, phase-shifted)       |
+| 26  | Time-of-day sin (harmonic) | `sin(4*pi*t / 390)`              | Lunch-dip / mid-day pattern |
+| 27  | Time-of-day cos (harmonic) | `cos(4*pi*t / 390)`              | (same, phase-shifted)       |
+| 28  | Day-of-week (normalized)   | `day_index / 4.0` (Mon=0, Fri=1) | Weekly seasonality          |
 
 Where `t` = minutes since market open (0–390), `390` = total trading minutes per day.
 
@@ -187,6 +187,7 @@ Input (batch, 60, 28) + Static covariate (ticker embedding, dim=16)
 ```
 
 Key components:
+
 - **VSN**: Produces feature importance scores (Research Q3)
 - **Static covariate encoder**: Learned embedding per ticker (30 stocks → 16-dim), conditions GRN blocks on stock identity
 - **GLU gating on skip connections**: Faithful to the original Lim et al. (2021) paper
@@ -213,24 +214,26 @@ Dilated convolutions expand the receptive field from 7 → 15 timesteps without 
 
 ## 3. Training Configuration
 
-| Parameter         | Value                                            |
-|-------------------|--------------------------------------------------|
-| Loss              | Focal Loss (gamma=2.0, alpha=class_weights)      |
-| Label smoothing   | 0.1                                              |
-| Optimizer         | AdamW                                            |
-| Learning rate     | 1e-3                                             |
-| Weight decay      | 1e-5                                             |
-| Scheduler         | Linear warmup (10% steps) → CosineAnnealingLR   |
-| Batch size        | 256                                              |
-| Max epochs        | 50                                               |
-| Early stopping    | patience=10 on val macro F1                      |
-| Gradient clipping | max_norm=1.0                                     |
-| Device            | CUDA if available, else CPU                      |
+| Parameter         | Value                                         |
+| ----------------- | --------------------------------------------- |
+| Loss              | Focal Loss (gamma=2.0, alpha=class_weights)   |
+| Label smoothing   | 0.1                                           |
+| Optimizer         | AdamW                                         |
+| Learning rate     | 1e-3                                          |
+| Weight decay      | 1e-5                                          |
+| Scheduler         | Linear warmup (10% steps) → CosineAnnealingLR |
+| Batch size        | 256                                           |
+| Max epochs        | 50                                            |
+| Early stopping    | patience=10 on val macro F1                   |
+| Gradient clipping | max_norm=1.0                                  |
+| Device            | CUDA if available, else CPU                   |
 
 **Focal Loss** (`src/training/losses.py`):
+
 ```
 FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
 ```
+
 Down-weights easy examples, focuses training on hard boundary cases (neutral vs up/down). Strictly better than weighted CrossEntropy for ambiguous class boundaries.
 
 **Label smoothing**: Replaces hard [0,0,1] targets with soft [0.033, 0.033, 0.933]. Accounts for the inherent noise at label boundaries — a return at the 34th percentile vs 32nd percentile shouldn't be treated as categorically different.
@@ -294,17 +297,17 @@ Down-weights easy examples, focuses training on hard boundary cases (neutral vs 
 
 ## 6. Notebooks
 
-| Notebook                      | Purpose                                                                              |
-|-------------------------------|--------------------------------------------------------------------------------------|
-| `01_data_exploration.ipynb`   | EDA, feature distributions, correlation heatmap, class balance, MI feature ranking   |
-| `02_training.ipynb`           | Train all 3 models (walk-forward), learning curves, MLflow comparison                |
-| `03_evaluation.ipynb`         | Model comparison, McNemar's test, confusion matrices, feature importance, volatility analysis, backtesting |
+| Notebook                    | Purpose                                                                                                    |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `01_data_exploration.ipynb` | EDA, feature distributions, correlation heatmap, class balance, MI feature ranking                         |
+| `02_training.ipynb`         | Train all 3 models (walk-forward), learning curves, MLflow comparison                                      |
+| `03_evaluation.ipynb`       | Model comparison, McNemar's test, confusion matrices, feature importance, volatility analysis, backtesting |
 
 ---
 
-## 7. Streamlit Demo App
+## 7. Next.js Demo App
 
-`app/streamlit_app.py` — interactive dashboard for presenting results:
+`frontend/src/app/page.tsx` — interactive dashboard for presenting results:
 
 - **Stock selector**: Pick any of the 30 tickers
 - **Model selector**: Choose LSTM / TFT / CNN-LSTM
@@ -319,23 +322,23 @@ Down-weights easy examples, focuses training on hard boundary cases (neutral vs 
 
 ## 8. Implementation Order
 
-| Step | What                                               | Depends On |
-|------|----------------------------------------------------|------------|
-| 1    | Scaffolding (dirs, requirements, .gitignore, ruff) | —          |
-| 2    | Data download + caching (yfinance)                 | Step 1     |
-| 3    | Feature engineering (stationary OHLCV + indicators + Fourier) | Step 2 |
-| 4    | Label generation (volatility-normalized)           | Step 3     |
-| 5    | PyTorch Dataset + walk-forward DataLoaders         | Step 4     |
-| 6    | LSTM + temporal attention model                    | Step 5     |
-| 7    | Training pipeline + focal loss + metrics + MLflow  | Step 6     |
-| 8    | Train & validate LSTM (end-to-end test)            | Step 7     |
-| 9    | CNN-LSTM (dilated) model + train                   | Step 7     |
-| 10   | TFT model + train                                  | Step 7     |
-| 11   | Feature importance (MI + VSN + ablation)           | Step 10    |
-| 12   | Volatility analysis                                | Steps 8-10 |
-| 13   | Backtesting (with MC Dropout confidence filtering) | Steps 8-10 |
-| 14   | Notebooks (EDA, training, evaluation)              | Steps 1-13 |
-| 15   | Streamlit demo app                                 | Steps 1-13 |
+| Step | What                                                          | Depends On |
+| ---- | ------------------------------------------------------------- | ---------- |
+| 1    | Scaffolding (dirs, requirements, .gitignore, ruff)            | —          |
+| 2    | Data download + caching (yfinance)                            | Step 1     |
+| 3    | Feature engineering (stationary OHLCV + indicators + Fourier) | Step 2     |
+| 4    | Label generation (volatility-normalized)                      | Step 3     |
+| 5    | PyTorch Dataset + walk-forward DataLoaders                    | Step 4     |
+| 6    | LSTM + temporal attention model                               | Step 5     |
+| 7    | Training pipeline + focal loss + metrics + MLflow             | Step 6     |
+| 8    | Train & validate LSTM (end-to-end test)                       | Step 7     |
+| 9    | CNN-LSTM (dilated) model + train                              | Step 7     |
+| 10   | TFT model + train                                             | Step 7     |
+| 11   | Feature importance (MI + VSN + ablation)                      | Step 10    |
+| 12   | Volatility analysis                                           | Steps 8-10 |
+| 13   | Backtesting (with MC Dropout confidence filtering)            | Steps 8-10 |
+| 14   | Notebooks (EDA, training, evaluation)                         | Steps 1-13 |
+| 15   | Next.js demo app                                              | Steps 1-13 |
 
 ---
 
@@ -358,7 +361,6 @@ scikit-learn>=1.8
 matplotlib>=3.10
 seaborn>=0.13
 plotly>=6.7
-streamlit>=1.56
 
 # Experiment Tracking
 mlflow>=3.11
@@ -389,6 +391,7 @@ known-first-party = ["src"]
 ```
 
 Rules enabled:
+
 - **E/W**: pycodestyle errors/warnings
 - **F**: pyflakes (unused imports, undefined names)
 - **I**: isort (import ordering)
@@ -401,22 +404,22 @@ Rules enabled:
 
 ## 11. Advanced Techniques Summary
 
-| Technique | Where | Mathematical Concept |
-|-----------|-------|---------------------|
-| Log-return OHLCV | `features.py` | Stationarity via log-differencing |
-| Fourier time features | `features.py` | Sinusoidal encoding of cyclical patterns |
-| EWMA volatility normalization | `labels.py` | RiskMetrics exponential weighting (lambda=0.94) |
-| Focal loss | `losses.py` | Down-weighting easy examples: `(1-p_t)^gamma` |
-| Label smoothing | `trainer.py` | Soft targets for label noise at boundaries |
-| Temporal attention (LSTM) | `lstm.py` | Bahdanau additive attention over hidden states |
-| Dilated convolutions | `cnn_lstm.py` | Exponential receptive field growth (WaveNet/TCN) |
-| Variable Selection Network | `tft.py` | Learned GLU-gated per-feature importance |
-| Static covariate embedding | `tft.py` | Ticker identity conditioning via learned embeddings |
-| MC Dropout uncertainty | `backtest.py` | Bayesian approximation via dropout at inference |
-| Mutual information | `feature_importance.py` | `MI(X;Y) = Σ p(x,y) log(p(x,y)/(p(x)p(y)))` |
-| McNemar's test | `metrics.py` | Chi-squared test on discordant predictions |
-| Walk-forward validation | `dataset.py` | Rolling temporal CV with expanding/sliding window |
-| Sortino / Calmar ratios | `backtest.py` | Downside-risk-adjusted and drawdown-adjusted returns |
+| Technique                     | Where                   | Mathematical Concept                                 |
+| ----------------------------- | ----------------------- | ---------------------------------------------------- |
+| Log-return OHLCV              | `features.py`           | Stationarity via log-differencing                    |
+| Fourier time features         | `features.py`           | Sinusoidal encoding of cyclical patterns             |
+| EWMA volatility normalization | `labels.py`             | RiskMetrics exponential weighting (lambda=0.94)      |
+| Focal loss                    | `losses.py`             | Down-weighting easy examples: `(1-p_t)^gamma`        |
+| Label smoothing               | `trainer.py`            | Soft targets for label noise at boundaries           |
+| Temporal attention (LSTM)     | `lstm.py`               | Bahdanau additive attention over hidden states       |
+| Dilated convolutions          | `cnn_lstm.py`           | Exponential receptive field growth (WaveNet/TCN)     |
+| Variable Selection Network    | `tft.py`                | Learned GLU-gated per-feature importance             |
+| Static covariate embedding    | `tft.py`                | Ticker identity conditioning via learned embeddings  |
+| MC Dropout uncertainty        | `backtest.py`           | Bayesian approximation via dropout at inference      |
+| Mutual information            | `feature_importance.py` | `MI(X;Y) = Σ p(x,y) log(p(x,y)/(p(x)p(y)))`          |
+| McNemar's test                | `metrics.py`            | Chi-squared test on discordant predictions           |
+| Walk-forward validation       | `dataset.py`            | Rolling temporal CV with expanding/sliding window    |
+| Sortino / Calmar ratios       | `backtest.py`           | Downside-risk-adjusted and drawdown-adjusted returns |
 
 ---
 
@@ -426,7 +429,7 @@ Rules enabled:
 - [x] **Labels**: Volatility-normalized adaptive thresholds (EWMA + fixed σ cutoffs)
 - [x] **Sequence length**: 60 timesteps
 - [x] **Features**: 28 total (5 stationary OHLCV + 18 indicators + 5 Fourier/temporal)
-- [x] **Demo**: Streamlit app
+- [x] **Demo**: Next.js app
 - [x] **Data source**: single configured provider in config
 - [x] **Linting**: Ruff with pyproject.toml config
 - [x] **Loss**: Focal loss + label smoothing

@@ -39,3 +39,22 @@ data/raw/*
 
 # Logs
 *.log
+
+# Lint caches
+.ruff_cache/
+
+# Course/report assets kept locally only
+*.pdf
+*.pptx
+*.pptm
+*.ppt
+~$*
+
+# Agent tooling kept out of VCS
+.claude/
+.cursor/
+.aider*
+AGENTS.md
+CLAUDE.md
+memory/
+.serena/

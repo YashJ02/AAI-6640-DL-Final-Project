@@ -17,7 +17,7 @@ The implementation follows the complete plan in `PROJECT_PLAN.md`, including:
 - Focal loss training with label smoothing and warmup+cosine scheduling
 - Significance testing (McNemar)
 - Feature importance, volatility regime analysis, and backtesting
-- Streamlit dashboard for presentation
+- Next.js dashboard for presentation
 
 ## Project Structure
 
@@ -50,8 +50,11 @@ AAI-6640-DL-Final-Project/
 |   |   |-- config.py
 |   |-- pipeline.py
 |   |-- main.py
-|-- app/
-|   |-- streamlit_app.py
+|-- frontend/
+|   |-- src/
+|   |-- public/
+|   |-- package.json
+|   |-- bun.lock
 |-- notebooks/
 |   |-- 01_data_exploration.ipynb
 |   |-- 02_training.ipynb
@@ -73,6 +76,13 @@ pip install -r requirements.txt
 ```
 
 1. No API credentials are required for the default open-data setup (`yfinance`).
+
+Frontend setup (Bun runtime):
+
+```bash
+cd frontend
+bun install
+```
 
 ### GPU/Performance Defaults
 
@@ -159,12 +169,13 @@ Notebook-driven execution:
 
 Each notebook is organized with explicit step comments for reproducibility.
 
-### Step 15: Streamlit Demo
+### Step 15: Next.js Demo
 
 Launch dashboard:
 
 ```bash
-streamlit run app/streamlit_app.py
+cd frontend
+bun run dev
 ```
 
 The app reads artifacts from `artifacts/` and shows:

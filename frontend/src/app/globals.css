@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f3efe6;
+  --fg: #102a43;
+  --glass: rgba(255, 255, 255, 0.82);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --font-sans: var(--font-space-grotesk);
+}
+
+.dark {
+  --bg: #06141f;
+  --fg: #d7ebf7;
+  --glass: rgba(11, 29, 44, 0.82);
+}
+
+body {
+  min-height: 100vh;
+  color: var(--fg);
+  font-family: var(--font-space-grotesk), sans-serif;
+  background:
+    radial-gradient(circle at 10% 8%, rgba(20, 184, 166, 0.2), transparent 40%),
+    radial-gradient(circle at 90% 15%, rgba(245, 158, 11, 0.22), transparent 36%),
+    linear-gradient(180deg, var(--bg) 0%, color-mix(in oklab, var(--bg) 84%, #16324f) 100%);
+}
+
+.dashboard-shell {
+  min-height: 100vh;
+}
+
+.hero-card {
+  background:
+    linear-gradient(130deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.38)),
+    url("https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=1600&q=80") center / cover;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 24px 45px rgba(3, 24, 35, 0.18);
+}
+
+.dark .hero-card {
+  background:
+    linear-gradient(140deg, rgba(5, 20, 35, 0.82), rgba(5, 20, 35, 0.48)),
+    url("https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=1600&q=80") center / cover;
+  border: 1px solid rgba(108, 152, 178, 0.25);
+}
+
+.matrix-wrap {
+  overflow-x: auto;
+}
+
+.matrix-grid {
+  display: grid;
+  min-width: 420px;
+  grid-template-columns: 120px repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: center;
+}
+
+.matrix-label-top,
+.matrix-label-left {
+  display: flex;
+  justify-content: center;
+  text-align: center;
+}
+
+.matrix-cell {
+  min-height: 68px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(2px);
+}
+
+@media (max-width: 768px) {
+  .matrix-grid {
+    min-width: 360px;
+    grid-template-columns: 88px repeat(3, minmax(0, 1fr));
+  }
+}
