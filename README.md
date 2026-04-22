@@ -22,10 +22,11 @@ Production-style deep learning system for intraday 3-class direction prediction 
 16. [Config Profiles](#config-profiles)
 17. [Reproducibility and Quality Controls](#reproducibility-and-quality-controls)
 18. [Current Artifact Snapshot In This Repo](#current-artifact-snapshot-in-this-repo)
-19. [Developer Commands](#developer-commands)
-20. [Known Limitations](#known-limitations)
-21. [Contributors](#contributors)
-22. [Course Context](#course-context)
+19. [Current Model Metrics Snapshot](#current-model-metrics-snapshot)
+20. [Developer Commands](#developer-commands)
+21. [Known Limitations](#known-limitations)
+22. [Contributors](#contributors)
+23. [Course Context](#course-context)
 
 ## Project Overview
 
@@ -528,6 +529,22 @@ Current data-quality summary file reports:
 - feature count: `34` (28 base + 6 related features in this run)
 
 Exact values will change after each new run.
+
+## Current Model Metrics Snapshot
+
+Source: `artifacts/results_summary.json` currently checked into this repository.
+
+| Model | Test Loss (mean ± std) | Test Accuracy (mean ± std) | Test Macro-F1 (mean ± std) | Baseline Accuracy (mean) | Delta Accuracy vs Baseline | Delta Macro-F1 vs Baseline |
+| --- | --- | --- | --- | --- | --- | --- |
+| `lstm` | 0.4306 ± 0.0102 | 0.4577 ± 0.0190 | 0.3678 ± 0.0019 | 0.5189 | -0.0612 | +0.1402 |
+| `cnn_lstm` | 0.4299 ± 0.0092 | 0.4445 ± 0.0146 | 0.3775 ± 0.0005 | 0.5189 | -0.0743 | +0.1499 |
+| `tft` | 0.4293 ± 0.0102 | 0.4521 ± 0.0236 | 0.3765 ± 0.0102 | 0.5189 | -0.0668 | +0.1489 |
+
+Interpretation notes:
+
+- Accuracy is below the majority-class baseline in this snapshot, so raw directional hit-rate is not yet outperforming the naive classifier.
+- Macro-F1 is substantially above baseline for all three models, indicating better class balance behavior than majority-only predictions.
+- Best macro-F1 in this run is `cnn_lstm` (0.3775 mean), while best accuracy is `lstm` (0.4577 mean).
 
 ## Developer Commands
 
