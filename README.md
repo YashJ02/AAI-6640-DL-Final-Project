@@ -1,243 +1,192 @@
-# AAI 6640 Final Project — Intraday Direction Intelligence Platform
+# AAI 6640 Final Project: Intraday Direction Intelligence Platform
 
-Production-style deep learning system for **intraday 3-class direction prediction** (`down`, `neutral`, `up`) on a 30-stock S&P 500 universe.
+Production-style deep learning system for intraday 3-class direction prediction (`down`, `neutral`, `up`) on a 30-stock S&P 500 universe, with a full Python training pipeline and a Next.js analytics dashboard.
 
-This repository includes:
+## Table of Contents
 
-- End-to-end data, feature, labeling, training, and evaluation pipeline (PyTorch)
-- Three comparative model families:
-  - **LSTM + Temporal Attention**
-  - **Temporal Fusion Transformer (TFT)**
-  - **Dilated CNN-LSTM Hybrid**
-- Robust data-quality auditing and fold-aware normalization
-- Statistical and trading-oriented evaluation (McNemar, volatility regime analysis, backtesting)
-- Next.js analytics dashboard consuming generated artifacts
+1. [Project Overview](#project-overview)
+2. [What This Repository Implements](#what-this-repository-implements)
+3. [Architecture Summary](#architecture-summary)
+4. [Repository Structure](#repository-structure)
+5. [Environment Setup](#environment-setup)
+6. [Quick Start Commands](#quick-start-commands)
+7. [Data Pipeline Details](#data-pipeline-details)
+8. [Feature Engineering Details](#feature-engineering-details)
+9. [Labeling Strategy](#labeling-strategy)
+10. [Dataset and Split Strategy](#dataset-and-split-strategy)
+11. [Model Architectures](#model-architectures)
+12. [Training Strategy](#training-strategy)
+13. [Evaluation and Analysis](#evaluation-and-analysis)
+14. [Artifact Contract](#artifact-contract)
+15. [Dashboard (Frontend)](#dashboard-frontend)
+16. [Config Profiles](#config-profiles)
+17. [Reproducibility and Quality Controls](#reproducibility-and-quality-controls)
+18. [Current Artifact Snapshot In This Repo](#current-artifact-snapshot-in-this-repo)
+19. [Developer Commands](#developer-commands)
+20. [Known Limitations](#known-limitations)
+21. [Contributors](#contributors)
+22. [Course Context](#course-context)
 
----
+## Project Overview
 
-## 1) Scope and Objectives
+This project compares multiple deep learning architectures for short-horizon intraday direction prediction under realistic market-data constraints.
 
-This project is built as a full-stack research-to-delivery workflow for financial ML under realistic constraints:
+Primary goals:
 
-- Open-data ingestion via `yfinance`
-- Intraday bars (`5Min` default) with provider-aware history limits
-- Leakage controls (session-safe label generation, fold-scoped normalization)
-- Time-aware split strategies (`sessions`, `kfold`, `month`)
-- Risk-adjusted model assessment (Sharpe/Sortino/Calmar + drawdown)
+- Build a complete data-to-model-to-dashboard workflow (not just a notebook experiment).
+- Enforce leakage-resistant preprocessing and fold-aware training behavior.
+- Compare model families using both classification and trading-oriented metrics.
+- Persist standardized artifacts for reproducibility and frontend visualization.
 
-Primary outcome: compare model families on directional classification quality and downstream strategy behavior, while preserving reproducibility and auditability.
+Core stack:
 
----
+- Python 3.11+
+- PyTorch 2.x
+- yfinance + pandas-ta
+- scikit-learn / scipy metrics and statistical testing
+- MLflow tracking
+- Next.js 16 + React 19 + TypeScript dashboard
 
-## 2) System Architecture
+## What This Repository Implements
 
-### Core pipeline stages
+- End-to-end intraday data pipeline:
+  - Download and cache OHLCV bars from yfinance.
+  - Clean bars with session, validity, and anomaly checks.
+  - Engineer stationary, technical, and temporal features.
+  - Build volatility-normalized labels.
+- Time-aware dataset building:
+  - Sliding sequence windows.
+  - Session-based rolling folds, time-aware k-fold, or month-based splits.
+  - Fold-scoped indicator normalization and non-finite value guards.
+- Model training and comparison:
+  - LSTM + temporal attention.
+  - Temporal Fusion Transformer (TFT-style).
+  - Dilated CNN + BiLSTM hybrid.
+  - Optional weighted soft-voting ensemble if multiple models are trained.
+- Evaluation and analytics:
+  - Accuracy, macro-F1, confusion matrices, classification report.
+  - Majority-class baseline comparison.
+  - Pairwise McNemar significance testing.
+  - Optional feature importance, volatility regime analysis, and backtesting pipelines.
+- Dashboard delivery:
+  - Next.js API reads artifacts from parent `artifacts/` directory.
+  - Zod schema validation for robust typed payloads.
 
-1. **Download & Cache**
-   - Universe + related-market symbols cached to parquet in `data/raw`
-2. **Cleaning & Session Validation**
-   - Non-session bars, malformed OHLCV, outliers, and low-coverage sessions removed
-3. **Feature Engineering (28 base features)**
-   - 5 stationary OHLCV transforms
-   - 18 technical indicators
-   - 5 Fourier/temporal cyclic features
-   - Optional related-symbol context features
-4. **Label Generation**
-   - EWMA volatility-normalized future return labels (`down/neutral/up`)
-5. **Dataset Construction**
-   - Sliding windows (default sequence length = 60)
-   - Fold generation using configurable split mode
-6. **Training & Selection**
-   - Focal loss, warmup+cosine LR, early stopping, AMP
-   - Optional class-decision bias tuning on validation fold
-7. **Evaluation**
-   - Classification metrics, McNemar significance
-   - Feature-importance suite
-   - Volatility-regime degradation
-   - Backtesting (filtered/unfiltered)
+## Architecture Summary
 
----
+High-level execution flow:
 
-## 3) Universe, Labels, and Features
+1. `src/main.py` parses CLI args and loads YAML config.
+2. `src/pipeline.py` orchestrates download -> cleaning -> features -> labels.
+3. `src/data/dataset.py` builds fold-specific datasets/loaders with leakage controls.
+4. `src/training/trainer.py` trains each model across folds with early stopping and checkpointing.
+5. `src/pipeline.py` writes standardized artifacts (`results_summary.json`, predictions, checkpoints, data-quality files, KPI report).
+6. Frontend API (`frontend/src/app/api/dashboard/route.ts`) reads artifacts and serves dashboard payload.
 
-### Ticker universe (30)
-
-- Technology: AAPL, MSFT, NVDA, GOOGL, META, AMZN
-- Financials: JPM, BAC, GS, MS, WFC, C
-- Healthcare: JNJ, UNH, PFE, ABT, MRK, TMO
-- Energy: XOM, CVX, COP, SLB, EOG, MPC
-- Consumer Discretionary: TSLA, HD, NKE, MCD, SBUX, TJX
-
-### Related-market symbols (default)
-
-`SPY`, `QQQ`, `^VIX`, `IWM`, `DIA`, `TLT`, `GLD`, `DX-Y.NYB`
-
-### Labeling method
-
-Let future return be:
-
-$$
-r_t = \log\left(\frac{C_{t+h}}{C_t}\right)
-$$
-
-EWMA variance recursion:
-
-$$
-\sigma_t^2 = \lambda\sigma_{t-1}^2 + (1-\lambda)r_{t-1}^2
-$$
-
-Normalized return:
-
-$$
-z_t = \frac{r_t}{\sigma_t}
-$$
-
-Class mapping (default):
-
-- `down` (0): $z_t < -0.5$
-- `neutral` (1): $-0.5 \le z_t \le 0.5$
-- `up` (2): $z_t > 0.5$
-
-Optional fold-adaptive thresholds are supported through config.
-
-### Feature blocks
-
-- **Stationary OHLCV transforms (5)**: log-return, range/body/shadow ratios, volume log-change
-- **Technical indicators (18)**: RSI, MACD family, Bollinger family, EMA(9/21), ATR, VWAP, OBV, ADX, Stoch, CCI, Williams %R, MFI
-- **Temporal/Fourier (5)**: intraday sin/cos (primary + harmonic), normalized day-of-week
-- **Related context (optional)**: per-symbol return and volume-change channels
-
----
-
-## 4) Repository Layout
+## Repository Structure
 
 ```text
 AAI-6640-DL-Final-Project/
-├── config/                   # Experiment profiles (default, KPI, k-fold, accuracy-focused, etc.)
-├── data/raw/                 # Cached market parquet files
-├── src/
-│   ├── data/                 # download, cleaning, features, labels, dataset
-│   ├── models/               # lstm.py, tft.py, cnn_lstm.py
-│   ├── training/             # losses, metrics, trainer
-│   ├── evaluation/           # feature importance, volatility analysis, backtest
-│   ├── pipeline.py           # end-to-end orchestration
-│   └── main.py               # CLI entrypoint
-├── artifacts/                # outputs: checkpoints, logs, summaries, evaluation assets
-├── notebooks/                # EDA, training, evaluation notebooks
-├── frontend/                 # Next.js dashboard over artifacts/
-├── PROJECT_PLAN.md
-├── requirements.txt
-└── pyproject.toml
+|- config/                     # Experiment profile YAMLs
+|- artifacts/                  # Generated outputs (checkpoints, predictions, summaries)
+|- frontend/                   # Next.js dashboard
+|- scripts/                    # Utility scripts (e.g., presentation generation)
+|- src/
+|  |- data/                    # download, cleaning, features, labels, dataset
+|  |- models/                  # lstm, tft, cnn_lstm model definitions
+|  |- training/                # trainer, losses, metrics
+|  |- evaluation/              # backtest, feature importance, regime analysis
+|  |- utils/                   # config and reproducibility helpers
+|  |- pipeline.py              # end-to-end Python orchestration
+|  |- main.py                  # CLI entrypoint
+|- pyproject.toml              # Metadata + Ruff config
+|- requirements.txt            # Python dependencies
+|- PROJECT_PLAN.md             # Project planning and methodology notes
+|- README.md
 ```
 
----
+Notes:
 
-## 5) Environment Setup
+- `data/raw/` is created at runtime (cache directory), not committed with market files.
+- `mlruns/` is generated when MLflow logging is active.
 
-### Python (recommended 3.11+)
+## Environment Setup
+
+### 1) Python backend
+
+Recommended Python version: `>=3.11`.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-No API key is required for the default pipeline.
+If you use a virtual environment on Windows PowerShell:
 
-### Frontend (Bun)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### 2) Frontend dashboard
+
+This repository includes `frontend/bun.lock`, so Bun is the primary package manager.
 
 ```bash
 cd frontend
 bun install
 ```
 
----
+You can also use npm if needed:
 
-## 6) Runbook (CLI)
+```bash
+cd frontend
+npm install
+```
 
-### Data-only build
+## Quick Start Commands
+
+Run from repository root.
+
+### Data preparation only
 
 ```bash
 python -m src.main --mode data
 ```
 
-Executes download → clean → features → labels and writes data quality outputs.
+Runs download + cleaning + feature engineering + labeling and writes data-quality artifacts.
 
-### Full train-and-compare run
+### Full training workflow
 
 ```bash
 python -m src.main --mode full
 ```
 
-### Train selected models only
+### Train mode (same training pipeline path as `full`)
+
+```bash
+python -m src.main --mode train
+```
+
+### Train only selected models
 
 ```bash
 python -m src.main --mode train --models lstm tft
 ```
 
-### Use alternate config profile
+### Use a different config profile
 
 ```bash
 python -m src.main --config config/kfold_cv.yaml --mode full
 ```
 
-### Force data refresh
+### Force fresh download (ignore cache)
 
 ```bash
 python -m src.main --mode full --force-refresh
 ```
 
----
-
-## 7) Config Profiles
-
-Common profiles available in `config/`:
-
-- `default.yaml`: balanced baseline with session splits and adaptive thresholds
-- `kfold_cv.yaml`: time-aware K-fold validation mode
-- `high_accuracy.yaml`: tuned short-run profile
-- `accuracy_90.yaml`: stricter thresholding and accuracy-optimized tuning
-- `kpi_dual.yaml`: KPI gates enabled (`target_accuracy_min`, `delta_vs_baseline`)
-- `benchmark_lstm_v2.yaml`: benchmark-oriented LSTM experiment profile
-
----
-
-## 8) Artifact Contract (for backend + dashboard)
-
-The dashboard and analysis stack expect artifacts under `artifacts/`, including:
-
-- `artifacts/results_summary.json`
-- `artifacts/kpi_accuracy_report.json` (if KPI enabled)
-- `artifacts/overfit_health_report.json`
-- `artifacts/data_quality/modeling_summary.json`
-- `artifacts/data_quality/ticker_modeling_report.csv`
-- `artifacts/data_quality/ticker_cleaning_report.csv`
-- `artifacts/training_logs/*_history.csv`
-- `artifacts/evaluation_accuracy90/**` (evaluation/backtest payloads)
-
-Checkpoint outputs are written to:
-
-- `artifacts/checkpoints/`
-
----
-
-## 9) Evaluation Coverage
-
-- **Classification**: Accuracy, Macro-F1, class reports, confusion matrix
-- **Statistical significance**: pairwise McNemar tests
-- **Feature importance**:
-  - Mutual information ranking
-  - TFT variable selection weights (when model/loader provided)
-  - Optional LSTM ablation
-- **Regime analysis**: low-vol vs high-vol degradation (ATR percentile partition)
-- **Backtesting**:
-  - Position mapping from class outputs
-  - Optional confidence gating
-  - Risk metrics: annualized return/volatility, Sharpe, Sortino, Calmar, max drawdown
-
----
-
-## 10) Frontend Dashboard
-
-Run the app:
+### Start dashboard
 
 ```bash
 cd frontend
@@ -246,54 +195,377 @@ bun run dev
 
 Open `http://localhost:3000`.
 
-The dashboard loads artifacts through the Next.js API route and validates payloads with Zod.
+## Data Pipeline Details
 
----
+### Universe
 
-## 11) Reproducibility and Quality Controls
+Default equity universe is 30 S&P 500 tickers grouped by sector in config:
 
-- Seed control + deterministic toggle in config
-- Fold-scoped normalization and adaptive thresholding
-- Session boundary checks in target generation to avoid overnight leakage
-- Cached data for reproducible reruns
-- Linting via Ruff:
+- technology
+- financials
+- healthcare
+- energy
+- consumer_discretionary
+
+Related market/context symbols (default):
+
+- `SPY`, `QQQ`, `^VIX`, `IWM`, `DIA`, `TLT`, `GLD`, `DX-Y.NYB`
+
+### Download and cache behavior (`src/data/download.py`)
+
+- Uses yfinance intraday bars with project interval notation (`1Min`, `5Min`, `15Min`).
+- Provider-aware lookback caps:
+  - `1Min` capped to 7 days.
+  - `5Min`/`15Min` capped to 60 days.
+- Cache key pattern:
+  - Main ticker: `{ticker}_{interval}_{history_days}d.parquet`
+  - Related symbol: `related_{symbol}_{interval}_{history_days}d.parquet`
+- Retries downloads up to 3 times.
+- Related symbol failures are skipped with warning (pipeline continues).
+
+### Cleaning rules (`src/data/cleaning.py`)
+
+For each ticker:
+
+1. Drop duplicate timestamps.
+2. Keep only regular session bars in `[start, end)` (default 09:30 to 16:00 NY).
+3. Remove invalid OHLCV rows (non-positive prices, invalid bar geometry, optional zero-volume drop).
+4. Remove extreme anomalies:
+   - absolute log return above configured threshold
+   - intrabar range above configured threshold
+5. Drop low-coverage sessions below `min_session_coverage`.
+
+Detailed per-ticker cleaning stats are written to CSV artifacts.
+
+## Feature Engineering Details
+
+Base feature set has 28 columns from three blocks.
+
+### 1) Stationary OHLCV transforms (5)
+
+- `log_return`
+- `hl_range`
+- `oc_body`
+- `upper_shadow`
+- `volume_log_change`
+
+### 2) Technical indicators (18)
+
+- RSI
+- MACD line/signal/hist
+- Bollinger upper/lower/width
+- EMA 9/21
+- ATR
+- VWAP
+- OBV
+- ADX
+- Stochastic K/D
+- CCI
+- Williams %R
+- MFI
+
+### 3) Temporal/Fourier features (5)
+
+- Primary intraday sin/cos cycle
+- Harmonic intraday sin/cos cycle
+- Normalized day-of-week
+
+### Related context features
+
+When `data.use_related_features=true`, related symbols add:
+
+- per-symbol return feature (`*_ret1`)
+- per-symbol volume-change feature (`*_volchg1`)
+- optional realized volatility feature (`*_rv12`) if enabled
+
+Total feature count is dynamic:
+
+- `28 + related columns successfully available`
+
+### Non-finite handling
+
+- Feature builders sanitize `+/-inf` to `NaN` after log/division ops.
+- Before sequence construction, fold frames drop non-finite rows across active feature columns and label.
+
+## Labeling Strategy
+
+Label generation is implemented in `src/data/labels.py`.
+
+Given close price `C_t` and horizon `h` (default one bar):
+
+$$
+r_t = \log\left(\frac{C_{t+h}}{C_t}\right)
+$$
+
+Session boundary protection:
+
+- Future returns that cross to a different trading day are masked out.
+
+EWMA variance recursion:
+
+$$
+\sigma_t^2 = \lambda \sigma_{t-1}^2 + (1-\lambda)r_{t-1}^2
+$$
+
+Normalized return:
+
+$$
+z_t = \frac{r_t}{\sigma_t}
+$$
+
+Class mapping:
+
+- `down` (0): `z_t < threshold_down`
+- `neutral` (1): `threshold_down <= z_t <= threshold_up`
+- `up` (2): `z_t > threshold_up`
+
+Optional fold-adaptive thresholding (`src/data/dataset.py`):
+
+- Train split quantiles can override fixed thresholds for each fold.
+- Falls back to configured fixed thresholds if quantile thresholds are invalid.
+
+## Dataset and Split Strategy
+
+### Sequence dataset
+
+- Sequence length: configurable (default 60 timesteps).
+- Each sample is `(X_seq, y_end, ticker_id)`.
+- Windows never cross ticker boundaries.
+
+### Split modes (`dataset.split_mode`)
+
+1. `sessions` (default): rolling session-based train/val/test windows.
+2. `kfold`: session-level k-fold with optional time-aware train-val pool.
+3. `month`: explicit month-index folds from config.
+
+### Leakage controls in folds
+
+- Indicator normalization stats are fit on train split only and applied to val/test.
+- Fold-adaptive labels derive thresholds from train split only.
+- Non-finite rows are removed before DataLoader creation.
+
+### Class balancing
+
+- Optional weighted train sampler (`dataset.weighted_sampler`).
+- Class weights computed from train labels and passed to focal loss (unless disabled).
+
+## Model Architectures
+
+Implemented in `src/models/`.
+
+### 1) LSTM + Temporal Attention (`lstm.py`)
+
+- Stacked LSTM encoder.
+- LayerNorm on sequence outputs.
+- Additive temporal attention for context vector.
+- MLP classifier head.
+
+### 2) Temporal Fusion Transformer style model (`tft.py`)
+
+- Variable selection gating per timestep.
+- Ticker embedding as static covariate.
+- Gated Residual Network blocks.
+- LSTM encoder + multi-head self-attention + gated skip.
+- Classifier head from final fused timestep.
+
+### 3) Dilated CNN + BiLSTM hybrid (`cnn_lstm.py`)
+
+- Parallel dilated Conv1d branches.
+- Concatenated conv features.
+- Bidirectional LSTM sequence modeling.
+- MLP classifier head.
+
+### Optional ensemble
+
+If at least two model families are trained, pipeline can build weighted soft-voting ensemble from fold probabilities.
+
+## Training Strategy
+
+Training engine lives in `src/training/trainer.py`.
+
+Key components:
+
+- Loss: multi-class focal loss with optional class weighting and label smoothing.
+- Optimizer: AdamW.
+- LR schedule: linear warmup + cosine decay (`LambdaLR`).
+- Early stopping on validation macro-F1.
+- Optional AMP on CUDA.
+- Optional `torch.compile`.
+- Gradient clipping.
+- Fold-level checkpointing to `artifacts/checkpoints/`.
+- Optional decision bias tuning on validation probabilities (`down_bias`, `up_bias`) optimizing macro-F1 or accuracy.
+- Optional MLflow logging per fold.
+
+## Evaluation and Analysis
+
+### Always produced by training pipeline
+
+- Test loss, accuracy, macro-F1.
+- Confusion matrix and classification report.
+- Majority-class baseline metrics.
+- Pairwise McNemar test per fold.
+- Fold summaries (mean/std) in `results_summary.json`.
+
+### Additional analysis utilities (`src/evaluation/`)
+
+- `feature_importance.py`:
+  - mutual information ranking
+  - TFT variable selection weights
+  - optional LSTM ablation ranking
+- `volatility_analysis.py`:
+  - low-vol vs high-vol regime metrics using ATR percentile split
+  - degradation percentages
+- `backtest.py`:
+  - class-to-position mapping
+  - confidence-threshold gating
+  - portfolio return aggregation for multi-ticker frames
+  - Sharpe/Sortino/Calmar/max-drawdown metrics
+
+The orchestration helpers are in `src/evaluation/pipeline.py` and can be invoked from custom scripts/notebooks.
+
+## Artifact Contract
+
+### Core artifacts from `python -m src.main --mode train/full`
+
+- `artifacts/results_summary.json`
+- `artifacts/kpi_accuracy_report.json`
+- `artifacts/data_quality/modeling_summary.json`
+- `artifacts/data_quality/ticker_cleaning_report.csv`
+- `artifacts/data_quality/ticker_modeling_report.csv`
+- `artifacts/checkpoints/<model>_fold_<id>.pt`
+- `artifacts/predictions/<model>_fold_<id>.npz`
+- `artifacts/training_logs/<model>_fold_<id>_history.csv` (if enabled)
+
+### Optional dashboard-enrichment artifacts
+
+If additional evaluation/reporting scripts are run, dashboard also consumes:
+
+- `artifacts/overfit_health_report.json`
+- `artifacts/evaluation_accuracy90/<model>/evaluation_summary.json`
+- `artifacts/evaluation_accuracy90/<model>/volatility_regime_metrics.csv`
+- `artifacts/evaluation_accuracy90/<model>/backtest_unfiltered_curve.csv`
+- `artifacts/evaluation_accuracy90/<model>/backtest_filtered_curve.csv`
+- `artifacts/evaluation_accuracy90/<model>_threshold_grid.csv`
+- `artifacts/evaluation_accuracy90/sharpe_optimization_summary.json`
+
+If these optional files are missing, frontend falls back to empty/null sections for those views.
+
+## Dashboard (Frontend)
+
+### How it loads data
+
+- API endpoint: `GET /api/dashboard`
+- Route handler: `frontend/src/app/api/dashboard/route.ts`
+- Server artifact loader: `frontend/src/lib/server/artifacts.ts`
+- Artifact root resolution: frontend resolves parent project root and reads `../artifacts`
+
+### Dashboard coverage
+
+- Model comparison and key metrics
+- Confusion matrix and decision bias summary
+- KPI gate summary
+- Data quality cards and ticker reports
+- Training history charts
+- McNemar matrices
+- Optional threshold sweep, volatility regime, and backtest views
+
+### Run commands
+
+```bash
+cd frontend
+bun run dev
+```
+
+For production build:
+
+```bash
+cd frontend
+bun run build
+bun run start
+```
+
+## Config Profiles
+
+Profiles are in `config/`.
+
+| Profile | Main Purpose | Key Differences |
+| --- | --- | --- |
+| `default.yaml` | Balanced baseline | Session split, adaptive thresholds on, weighted sampler on, up to 2 folds, 45 epochs |
+| `high_accuracy.yaml` | Faster focused run | 1 session fold, 20 epochs, adaptive thresholds on |
+| `kfold_cv.yaml` | Time-aware cross-validation | `split_mode: kfold`, `n_splits: 5`, `time_aware: true`, `max_folds: 3` |
+| `accuracy_90.yaml` | Accuracy-targeted profile | Wide label thresholds (`-2/+2`), adaptive thresholds off, class weights off, decision tuning metric set to accuracy |
+| `kpi_dual.yaml` | Enforced KPI gates | KPI enforcement with minimum accuracy and delta-vs-baseline thresholds |
+| `benchmark_lstm_v2.yaml` | Benchmark profile scaffold | Similar baseline settings; intended for benchmark-specific iterations |
+
+Use any profile via:
+
+```bash
+python -m src.main --config config/<profile>.yaml --mode full
+```
+
+## Reproducibility and Quality Controls
+
+- Seed management (`numpy`, `torch`, optional deterministic CuDNN).
+- Cache-first data access with explicit force-refresh option.
+- Session-safe label horizon handling.
+- Train-only normalization and optional train-only adaptive thresholds.
+- Non-finite feature row filtering before sequence generation.
+- Artifact-first outputs for auditability.
+
+## Current Artifact Snapshot In This Repo
+
+At the time of this README rewrite, checked-in artifacts include:
+
+- `artifacts/results_summary.json`
+- `artifacts/checkpoints/` for all three model families and two folds
+- `artifacts/predictions/` for all three model families and two folds
+- `artifacts/data_quality/modeling_summary.json` and ticker-level CSV reports
+
+Current data-quality summary file reports:
+
+- rows: `133660`
+- tickers: `30`
+- feature count: `34` (28 base + 6 related features in this run)
+
+Exact values will change after each new run.
+
+## Developer Commands
+
+Backend linting:
 
 ```bash
 ruff check .
 ```
 
----
+Frontend linting:
 
-## 12) Current Repository Notes
+```bash
+cd frontend
+bun run lint
+```
 
-- Existing checkpoint artifact currently present: `artifacts/checkpoints/tft_fold_1.pt`
-- Full result/evaluation JSON/CSV assets are generated after executing training/evaluation runs
+CLI help:
 
----
+```bash
+python -m src.main --help
+```
 
-## 13) Contributions
+## Known Limitations
 
-Team contribution breakdown:
+- yfinance intraday history windows are provider-limited.
+- Related symbols may intermittently fail download and be skipped.
+- Advanced evaluation artifacts (threshold sweeps/backtest summary files) are not produced by `src.main` directly and require additional evaluation pipeline execution.
+- Performance is sensitive to label-threshold choices and class balance in intraday regimes.
 
-- **Ruthvik Bandari**
-   - Project idea, ideation, and project description
-   - Final training strategy decisions
-   - Model cross-fold validation and final decision support (jointly with Om)
+## Contributors
 
-- **Om Patel**
-   - Complete frontend implementation
-   - Model validation workflow
-   - Final training and cross-fold validation decisions (jointly with Ruthvik)
+- Ruthvik Bandari
+- Om Patel
+- Yash Jain
 
-- **Yash Jain**
-   - Dataset collection
-   - Project skeleton setup
+## Course Context
 
----
-
-## 14) Course Context
-
-- Course: **AAI 6640 — Applied Deep Learning**
-- Framework: **PyTorch 2.x**
-- Tracking: **MLflow**
-- Linting: **Ruff**
+- Course: AAI 6640 - Applied Deep Learning
+- Framework: PyTorch 2.x
+- Tracking: MLflow
+- Linting: Ruff
